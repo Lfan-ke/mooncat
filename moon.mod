@@ -1,0 +1,26 @@
+name = "Lfan-ke/mooncat"
+
+version = "0.1.0"
+
+readme = "README.md"
+
+repository = "https://github.com/Lfan-ke/mooncat"
+
+license = "Apache-2.0"
+
+keywords = [
+  "asgi",
+  "server",
+  "uvicorn",
+  "http",
+  "websocket",
+  "moonbit",
+  "native",
+]
+
+description = "mooncat — a native ASGI 3.0 server for MoonBit (← uvicorn), built on moonbitlang/async and the moonasgi SEAM."
+
+import {
+  "Lfan-ke/moonasgi@0.1.0",
+  "moonbitlang/async@0.20.3",
+}

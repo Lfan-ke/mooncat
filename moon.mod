@@ -20,6 +20,8 @@ keywords = [
 
 description = "mooncat — a native ASGI 3.0 server for MoonBit (← uvicorn), built on moonbitlang/async and the moonasgi SEAM."
 
+preferred_target = "native"
+
 import {
   "Lfan-ke/moonasgi@0.1.0",
   "moonbitlang/async@0.20.3",

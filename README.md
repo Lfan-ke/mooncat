@@ -38,7 +38,7 @@ let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
 
 ## Status
 
-`v0` — HTTP/1.1 request → ASGI `Scope`/`Receive`/`Send` → response is **working and verified by a real socket round-trip in CI** (a server task answers a live `@http.get`). Roadmap, transliterated from uvicorn feature-by-feature: `:param` routing, onion middleware, lifespan startup/shutdown, WebSocket upgrade, sub-app mounting, then the self-built HTTP/1.1 parser knobs and multi-process prefork supervisor.
+`v0` — HTTP/1.1 request → ASGI `Scope`/`Receive`/`Send` → response is **working and verified by a real socket round-trip in CI** (a server task answers a live `@http.get`). Now also landed and CI-verified: the **lifespan** protocol (the app runs once under a `Lifespan` scope and `startup` is driven before the listener binds, `shutdown` on the way out — even under cancellation), a **WebSocket** upgrade path (`Connection: upgrade` + `Upgrade: websocket` → `@websocket.Conn::from_http_server`, echoing one message as a smoke path), and a `Config` struct for host/port/backlog. Roadmap, transliterated from uvicorn feature-by-feature: `:param` routing, onion middleware, the full WebSocket frame↔`Event` bridge, sub-app mounting, then the self-built HTTP/1.1 parser knobs and multi-process prefork supervisor.
 
 ## Native only
 

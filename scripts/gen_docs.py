@@ -28,8 +28,10 @@ SECTIONS = [
     ("process", "process_model.mbt", "Process model",
      "The uvicorn process model: a graceful shutdown that stops accepting, drains "
      "in-flight requests, runs lifespan shutdown, then closes the listener, plus a "
-     "--reload file watcher. Multi-worker prefork is bounded by the async transport — "
-     "one acceptor, concurrent per-connection handlers."),
+     "--reload file watcher. The graceful acceptor drives the same request path as "
+     "serve over a real ServerConnection, so WebSocket upgrades work here too. "
+     "Multi-worker prefork is bounded by the async transport — one acceptor, "
+     "concurrent per-connection handlers."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}
@@ -230,7 +232,7 @@ def main():
             'drive your app — exactly the role uvicorn plays for Python.</p>'
             '<div class="badges">'
             '<a href="https://github.com/Lfan-ke/mooncat/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Lfan-ke/mooncat/ci.yml?branch=master&label=CI&logo=github"></a>'
-            '<img alt="tests" src="https://img.shields.io/badge/tests-10%20passing%20(native)-0ca678">'
+            '<img alt="tests" src="https://img.shields.io/badge/tests-12%20passing%20(native)-0ca678">'
             '<a href="https://github.com/Lfan-ke/mooncat"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-source-24292f?logo=github"></a>'
             '<img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d5efc"></div>'
             '<div class="install"><span class="prompt">$</span><code>moon add Lfan-ke/mooncat</code>'

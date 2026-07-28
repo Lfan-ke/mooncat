@@ -40,19 +40,25 @@ pub async fn ShutdownHandle::request_stop(self : ShutdownHandle) -> Unit {
 }
 
 ///|
-/// Serve one accepted plaintext connection with the self-built HTTP/1.1 codec
-/// (`parse_http1_request` + `dispatch_http1`), looping under keep-alive until the
-/// peer closes or asks to close. Used by the graceful acceptor, which needs its
-/// own accept loop over `@socket.TcpServer` — the async
-/// library's `@http.Server::run_forever` gives no hook to stop accepting and
-/// drain, so mooncat drives the socket directly here. The connection is always
-/// closed on the way out.
-async fn serve_plain_conn(app : @moonasgi.AsgiApp, conn : @socket.Tcp) -> Unit {
+/// Serve one accepted connection through the same `dispatch` path `serve` uses,
+/// looping under keep-alive until the peer closes. The graceful acceptor needs
+/// its own accept loop over `@socket.TcpServer` — the async library's
+/// `@http.Server::run_forever` gives no hook to stop accepting and drain — so
+/// mooncat wraps each accepted socket in an `@http.ServerConnection` by hand and
+/// reads requests off it directly. Building the `ServerConnection` (rather than
+/// the self-built HTTP/1.1 codec the TLS path uses) is what lets the graceful
+/// server handle WebSocket upgrades: `dispatch` diverts them to
+/// `handle_websocket`, which needs exactly that `ServerConnection` to complete
+/// the 101 handshake. `read_request` raises on a clean end-of-stream, which ends
+/// the keep-alive loop; a WebSocket upgrade hijacks the connection, so the loop
+/// stops after dispatching it. The connection is always closed on the way out.
+async fn serve_conn(app : @moonasgi.AsgiApp, sock : @socket.Tcp) -> Unit {
+  let conn = @http.ServerConnection::new(sock)
   defer conn.close()
   for ;; {
-    guard parse_http1_request(conn) is Some(req) else { break }
-    let keep = dispatch_http1(app, req, conn, conn, scheme="http")
-    if !keep {
+    let request = conn.read_request() catch { _ => break }
+    dispatch(app, request, conn, conn)
+    if is_websocket_upgrade(request.headers) {
       break
     }
   }
@@ -73,7 +79,7 @@ async fn accept_loop(
     g.spawn_bg(
       () => {
         inflight.val = inflight.val + 1
-        serve_plain_conn(app, conn) catch {
+        serve_conn(app, conn) catch {
           _ => ()
         }
         inflight.val = inflight.val - 1
@@ -110,8 +116,10 @@ async fn drain(inflight : Ref[Int], timeout : Int?) -> Unit {
 ///
 /// The lifespan protocol runs as in `serve_config` — startup before the listener
 /// binds, shutdown on the way out. A single acceptor task then drives accepted
-/// connections through the self-built HTTP/1.1 codec, spawning one handler task
-/// per connection so requests are served concurrently.
+/// connections through the same `dispatch` path `serve` uses (over a hand-built
+/// `@http.ServerConnection`), spawning one handler task per connection so
+/// requests are served concurrently — and, because it is the real
+/// `ServerConnection`, WebSocket upgrades bridge here too.
 ///
 /// Shutdown is triggered either by `handle.shutdown()` / `handle.request_stop()`
 /// or by a signal the runtime turns into global cancellation (see the boundary
@@ -288,6 +296,33 @@ async test "concurrent request burst is served by per-connection handlers" {
     for c in codes {
       assert_eq(c, 200)
     }
+    handle.shutdown()
+    srv.wait()
+  })
+}
+
+///|
+/// A WebSocket round-trip under the graceful acceptor: the same `ws_echo_app` the
+/// plain `serve` path uses, now hosted by `serve_graceful`. Before this batch the
+/// graceful acceptor drove the self-built HTTP/1.1 codec, which can't build the
+/// `@http.ServerConnection` the upgrade needs, so a `ws://` request under
+/// `serve_graceful` had nowhere to go. It now runs the shared `dispatch`, so text
+/// and binary frames round-trip and the client close is observed as a disconnect,
+/// exactly as under `serve`.
+async test "graceful serve bridges a websocket round-trip" {
+  @async.with_task_group(g => {
+    let handle = ShutdownHandle::new()
+    let srv = g.spawn(() => {
+      serve_graceful(ws_echo_app, Config::new(port=18092), handle~)
+    })
+    @async.sleep(250)
+    let ws = @websocket.connect("ws://127.0.0.1:18092/chat")
+    ws.send_text("via graceful")
+    assert_eq(ws.recv().read_all().text(), "via graceful")
+    ws.send_binary(b"\x01\x02\x03\xff"[:])
+    assert_eq(ws.recv().read_all().binary(), b"\x01\x02\x03\xff")
+    ws.send_close(code=Normal)
+    ws.close()
     handle.shutdown()
     srv.wait()
   })

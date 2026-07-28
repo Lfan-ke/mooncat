@@ -112,19 +112,36 @@ async fn dispatch(
       }
     }
   }
+  let started = Ref(false)
+  let ended = Ref(false)
   let send : @moonasgi.Send = event => {
     match event {
-      HttpResponseStart(status~, headers~) =>
+      HttpResponseStart(status~, headers~) => {
+        started.val = true
         conn.send_response(
           status,
           reason(status),
           extra_headers=response_headers(headers),
         )
-      HttpResponseBody(body~, more_body=_) => conn.write(body)
+      }
+      HttpResponseBody(body~, more_body~) => {
+        conn.write(body)
+        if !more_body {
+          conn.end_response()
+          ended.val = true
+        }
+      }
       _ => ()
     }
   }
   app(scope, receive, send)
+  // Finalise the response here rather than leaning on the transport's own accept
+  // loop: `serve_graceful` drives its own accept loop over a raw ServerConnection
+  // and has no equivalent hook, so a response that never sent an explicit final
+  // body event still gets terminated the same way on both serve paths.
+  if started.val && !ended.val {
+    conn.end_response()
+  }
 }
 
 ///|

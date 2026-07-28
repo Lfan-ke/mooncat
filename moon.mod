@@ -25,4 +25,5 @@ preferred_target = "native"
 import {
   "Lfan-ke/moonasgi@0.1.0",
   "moonbitlang/async@0.20.3",
+  "Lfan-ke/moonapi@0.5.0",
 }

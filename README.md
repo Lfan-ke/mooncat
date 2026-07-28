@@ -38,7 +38,13 @@ let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
 
 ## Status
 
-`v0` — HTTP/1.1 request → ASGI `Scope`/`Receive`/`Send` → response is **working and verified by a real socket round-trip in CI** (a server task answers a live `@http.get`). Now also landed and CI-verified: the **lifespan** protocol (the app runs once under a `Lifespan` scope and `startup` is driven before the listener binds, `shutdown` on the way out — even under cancellation), a **WebSocket** upgrade path (`Connection: upgrade` + `Upgrade: websocket` → `@websocket.Conn::from_http_server`, echoing one message as a smoke path), and a `Config` struct for host/port/backlog. Roadmap, transliterated from uvicorn feature-by-feature: `:param` routing, onion middleware, the full WebSocket frame↔`Event` bridge, sub-app mounting, then the self-built HTTP/1.1 parser knobs and multi-process prefork supervisor.
+`v0` — HTTP/1.1 request → ASGI `Scope`/`Receive`/`Send` → response is **working and verified by a real socket round-trip in CI** (a server task answers a live `@http.get`). Landed and CI-verified alongside it:
+
+- the **lifespan** protocol — the app runs once under a `Lifespan` scope, `startup` is driven before the listener binds and `shutdown` on the way out, even under cancellation;
+- the **full WebSocket frame↔`Event` bridge** — a `Connection: upgrade` + `Upgrade: websocket` handshake becomes a `websocket` `Scope` driven through the moonasgi SEAM: `receive()` emits `websocket.connect` then real inbound text/binary frames as `WebSocketReceive` (streamed through the `Message`-as-`Reader`, so fragments reassemble) and a peer close as `WebSocketDisconnect(code)`; `send()` turns `WebSocketAccept` into the deferred 101 handshake, `WebSocketSendText`/`WebSocketSendBytes` into message frames, and `WebSocketClose(code, reason)` into a close frame. Rejecting before accept answers `403`; ping/pong are auto-handled at the protocol layer (as in uvicorn). Proven by a **real `@websocket` client** doing a full text + binary round-trip and a clean close in CI;
+- a `Config` exposing the HTTP/1.1 transport knobs the async server honours — `dual_stack`, `reuse_addr`, per-server response `headers`, `max_connections`, and `allow_failure` — on top of host/port/backlog. Keep-alive and chunked request/response framing are handled automatically by the async transport.
+
+Roadmap, transliterated from uvicorn feature-by-feature: subprotocol echo into the 101 response (awaits a transport hook), the self-built HTTP/1.1 parser knobs (`Expect: 100-continue`, buffer limits), TLS detail (ciphers/mTLS), and the multi-process prefork supervisor with `--reload`.
 
 ## Native only
 

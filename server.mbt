@@ -69,45 +69,11 @@ fn reason(code : Int) -> String {
 }
 
 ///|
-/// True when a request is a WebSocket upgrade handshake: `Upgrade: websocket`
-/// plus an `upgrade` token in `Connection`, compared case-insensitively per
-/// RFC 6455 / ASGI header rules.
-fn is_websocket_upgrade(headers : Map[String, String]) -> Bool {
-  let upgraded = match headers.get("upgrade") {
-    Some(u) => u.to_lower() == "websocket"
-    None => false
-  }
-  let connection = match headers.get("connection") {
-    Some(c) => c.to_lower().contains("upgrade")
-    None => false
-  }
-  upgraded && connection
-}
-
-///|
-/// Upgrade an HTTP connection to WebSocket and run the echo smoke path: accept
-/// the handshake via `@websocket.Conn::from_http_server`, then reflect a single inbound
-/// message (text or binary, streamed) back to the peer and close the tunnel.
-/// This is the transliterated seam where uvicorn hands a `websocket` scope to
-/// the app; the full frame→`Event` bridge lands in a later batch.
-async fn handle_websocket(
-  request : @http.Request,
-  conn : @http.ServerConnection,
-) -> Unit {
-  let ws = @websocket.Conn::from_http_server(request, conn)
-  defer ws.close()
-  let msg = ws.recv()
-  ws..start_message(msg.kind)..write_reader(msg).end_message()
-  ws.send_close() catch {
-    _ => ()
-  }
-}
-
-///|
 /// Bridge one HTTP connection to a moonasgi application: build the `Scope`, a
 /// `Receive` that streams the request body, and a `Send` that writes the
 /// response, then drive the app. A WebSocket upgrade request is diverted to
-/// `handle_websocket` before any HTTP scope is built.
+/// `handle_websocket` (the full frame↔`Event` bridge) before any HTTP scope is
+/// built.
 async fn dispatch(
   app : @moonasgi.AsgiApp,
   request : @http.Request,
@@ -115,7 +81,7 @@ async fn dispatch(
   conn : @http.ServerConnection,
 ) -> Unit {
   if is_websocket_upgrade(request.headers) {
-    handle_websocket(request, conn)
+    handle_websocket(app, request, conn)
     return
   }
   let (path, query) = split_query(request.path)
@@ -188,11 +154,20 @@ pub async fn serve_config(app : @moonasgi.AsgiApp, config : Config) -> Unit {
     let lifespan = Lifespan::new(app)
     let task = lifespan.spawn(g)
     lifespan.startup(task)
-    let server = @http.Server(@socket.Addr::parse(config.bind()))
+    let server = @http.Server(
+      @socket.Addr::parse(config.bind()),
+      dual_stack=config.dual_stack,
+      reuse_addr=config.reuse_addr,
+      headers=config.server_headers,
+    )
     try
-      server.run_forever((request, body_reader, conn) => {
-        dispatch(app, request, body_reader, conn)
-      })
+      server.run_forever(
+        (request, body_reader, conn) => {
+          dispatch(app, request, body_reader, conn)
+        },
+        allow_failure=config.allow_failure,
+        max_connections?=config.max_connections,
+      )
     catch {
       err => {
         @async.protect_from_cancel(() => {
@@ -284,14 +259,82 @@ async test "lifespan drives startup then shutdown in order" {
 }
 
 ///|
-async test "serve upgrades a websocket and echoes one message" {
+/// A minimal ASGI WebSocket echo app driven entirely through the moonasgi SEAM:
+/// accept the connection, then reflect every text/binary message back and stop
+/// on disconnect. Used by the round-trip integration test below.
+async fn ws_echo_app(
+  scope : @moonasgi.Scope,
+  receive : @moonasgi.Receive,
+  send : @moonasgi.Send,
+) -> Unit {
+  guard scope is WebSocket(_) else { return }
+  guard receive() is WebSocketConnect else { return }
+  send(@moonasgi.Event::WebSocketAccept(subprotocol=None, headers=[]))
+  for ;; {
+    match receive() {
+      WebSocketReceive(text~, bytes~) =>
+        match (text, bytes) {
+          (Some(t), _) => send(@moonasgi.Event::WebSocketSendText(t))
+          (_, Some(b)) => send(@moonasgi.Event::WebSocketSendBytes(b))
+          _ => ()
+        }
+      WebSocketDisconnect(_) => break
+      _ => break
+    }
+  }
+}
+
+///|
+async test "websocket bridge: full text + binary round-trip through the SEAM" {
   @async.with_task_group(g => {
-    let app : @moonasgi.AsgiApp = (_scope, _receive, _send) => ()
-    let task = g.spawn(() => serve(app, port=18081))
+    let task = g.spawn(() => serve(ws_echo_app, port=18081))
     @async.sleep(200)
-    let ws = @websocket.connect("ws://127.0.0.1:18081/ws")
-    ws.send_text("ping")
-    assert_eq(ws.recv().read_all().text(), "ping")
+    let ws = @websocket.connect("ws://127.0.0.1:18081/chat")
+    // text round-trip
+    ws.send_text("hello mooncat")
+    assert_eq(ws.recv().read_all().text(), "hello mooncat")
+    // a second text message: proves the bridge loops, not a one-shot echo
+    ws.send_text("second")
+    assert_eq(ws.recv().read_all().text(), "second")
+    // binary round-trip
+    ws.send_binary(b"\x00\x01\x02\xfe\xff"[:])
+    assert_eq(ws.recv().read_all().binary(), b"\x00\x01\x02\xfe\xff")
+    // clean close from the client; the server observes it as a disconnect
+    ws.send_close(code=Normal)
+    ws.close()
+    task.cancel()
+  })
+}
+
+///|
+/// A subprotocol offer on the handshake surfaces in the `WebSocketScope`.
+async test "websocket bridge: offered subprotocols reach the scope" {
+  @async.with_task_group(g => {
+    let seen : Array[String] = []
+    let app : @moonasgi.AsgiApp = (scope, receive, send) => {
+      guard scope is WebSocket(ws_scope) else { return }
+      for sp in ws_scope.subprotocols {
+        seen.push(sp)
+      }
+      guard receive() is WebSocketConnect else { return }
+      send(@moonasgi.Event::WebSocketAccept(subprotocol=None, headers=[]))
+      match receive() {
+        WebSocketReceive(text~, bytes=_) =>
+          match text {
+            Some(t) => send(@moonasgi.Event::WebSocketSendText(t))
+            None => ()
+          }
+        _ => ()
+      }
+    }
+    let task = g.spawn(() => serve(app, port=18082))
+    @async.sleep(200)
+    let ws = @websocket.connect("ws://127.0.0.1:18082/chat", headers={
+      "sec-websocket-protocol": "chat, superchat",
+    })
+    ws.send_text("go")
+    assert_eq(ws.recv().read_all().text(), "go")
+    assert_eq(seen, ["chat", "superchat"])
     ws.close()
     task.cancel()
   })

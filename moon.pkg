@@ -6,7 +6,15 @@ import {
   "moonbitlang/async/socket",
   "moonbitlang/async/http",
   "moonbitlang/async/websocket",
+  "moonbitlang/async/tls",
   "moonbitlang/async/aqueue",
   "moonbitlang/core/encoding/utf8",
   "Lfan-ke/moonasgi",
 }
+
+// The async TLS-server constructor is `#internal` ("for internal testing
+// only") — it is the only server-side TLS entry point the library exposes, and
+// its own suite drives HTTPS through it. Opt in to that alert so mooncat can
+// serve HTTPS; the single opt-in is documented in README §TLS and tls.mbt.
+
+warnings = "-alert_internal"

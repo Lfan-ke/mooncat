@@ -36,6 +36,26 @@ let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
 
 `serve` blocks in a keep-alive accept loop until its task is cancelled. Each request is bridged faithfully: the method/path/query/headers become an `http` `Scope`, the request body streams through `Receive`, and `HttpResponseStart` / `HttpResponseBody` events are written back via the connection.
 
+## HTTPS / TLS
+
+`serve_tls` serves the same ASGI app over TLS (← uvicorn's `--ssl-certfile` / `--ssl-keyfile`):
+
+```moonbit
+@mooncat.serve_tls(app,
+  certificate_file="certs/cert.pem",  // PEM cert  (OpenSSL platforms)
+  private_key_file="certs/key.pem",   // PEM key   (OpenSSL platforms)
+  pfx_file="certs/dev.pfx",           // PKCS#12   (Windows / SChannel)
+  port=8443)
+```
+
+Each accepted connection completes a real TLS handshake (`@tls.Tls`), then a **self-built, transport-agnostic HTTP/1.1 codec** — request-line + header parser and a response writer that frames single-shot replies with `Content-Length` and streamed replies with `Transfer-Encoding: chunked` — drives the moonasgi app over the encrypted stream, with keep-alive and the lifespan protocol intact. Proven end-to-end by a real `@http` TLS client doing `GET` over `https://` and asserting `200` + body in CI. Regenerate the throwaway localhost test cert with `scripts/gen_test_cert.sh`.
+
+**Design boundaries** (honest, not stubs):
+
+- The certificate is supplied as **PEM** on OpenSSL platforms (Linux/macOS) and as a **PKCS#12** `.pfx` on Windows (SChannel), because that is what each `moonbitlang/async` TLS backend accepts; `serve_tls` selects the right form at compile time.
+- `moonbitlang/async` exposes its **server-side** TLS constructor as `#internal` ("for internal testing only") — it is the only such entry point, and the async suite itself serves HTTPS through it — so mooncat opts into that one alert (`warnings = "-alert_internal"` in `moon.pkg`) and will migrate the moment a public API lands.
+- **WebSocket-over-TLS (`wss://`) is not bridged**: the async websocket upgrade needs an `@http.ServerConnection`, which is welded to `@socket.Tcp` and cannot wrap a `@tls.Tls` stream. Plaintext `serve` keeps full WebSocket support; this is a transport-capability boundary, not a behavioural choice.
+
 ## Status
 
 `v0` — HTTP/1.1 request → ASGI `Scope`/`Receive`/`Send` → response is **working and verified by a real socket round-trip in CI** (a server task answers a live `@http.get`). Landed and CI-verified alongside it:
@@ -44,7 +64,7 @@ let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
 - the **full WebSocket frame↔`Event` bridge** — a `Connection: upgrade` + `Upgrade: websocket` handshake becomes a `websocket` `Scope` driven through the moonasgi SEAM: `receive()` emits `websocket.connect` then real inbound text/binary frames as `WebSocketReceive` (streamed through the `Message`-as-`Reader`, so fragments reassemble) and a peer close as `WebSocketDisconnect(code)`; `send()` turns `WebSocketAccept` into the deferred 101 handshake, `WebSocketSendText`/`WebSocketSendBytes` into message frames, and `WebSocketClose(code, reason)` into a close frame. Rejecting before accept answers `403`; ping/pong are auto-handled at the protocol layer (as in uvicorn). Proven by a **real `@websocket` client** doing a full text + binary round-trip and a clean close in CI;
 - a `Config` exposing the HTTP/1.1 transport knobs the async server honours — `dual_stack`, `reuse_addr`, per-server response `headers`, `max_connections`, and `allow_failure` — on top of host/port/backlog. Keep-alive and chunked request/response framing are handled automatically by the async transport.
 
-Roadmap, transliterated from uvicorn feature-by-feature: subprotocol echo into the 101 response (awaits a transport hook), the self-built HTTP/1.1 parser knobs (`Expect: 100-continue`, buffer limits), TLS detail (ciphers/mTLS), and the multi-process prefork supervisor with `--reload`.
+**HTTPS/TLS serving** landed too — see the section below. Roadmap, transliterated from uvicorn feature-by-feature: subprotocol echo into the 101 response (awaits a transport hook), the self-built HTTP/1.1 parser knobs (`Expect: 100-continue`, buffer limits), further TLS detail (ciphers/mTLS), and the multi-process prefork supervisor with `--reload`.
 
 ## Native only
 

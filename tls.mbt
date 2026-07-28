@@ -63,7 +63,7 @@ async fn handle_https_conn(
   defer tls.close()
   for ;; {
     guard parse_http1_request(tls) is Some(req) else { break }
-    let keep = dispatch_http1(app, req, tls, tls)
+    let keep = dispatch_http1(app, req, tls, tls, scheme="https")
     if !keep {
       break
     }

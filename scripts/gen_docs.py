@@ -25,6 +25,11 @@ SECTIONS = [
      "Serving HTTP/1.1 over TLS (← uvicorn --ssl-certfile/--ssl-keyfile): a self-built "
      "HTTP/1.1 codec drives the moonasgi app over a @tls.Tls stream, with certificate "
      "material given as PEM (OpenSSL platforms) or PKCS#12 (Windows)."),
+    ("process", "process_model.mbt", "Process model",
+     "The uvicorn process model: a graceful shutdown that stops accepting, drains "
+     "in-flight requests, runs lifespan shutdown, then closes the listener, plus a "
+     "--reload file watcher. Multi-worker prefork is bounded by the async transport — "
+     "one acceptor, concurrent per-connection handlers."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}
@@ -185,11 +190,13 @@ document.addEventListener("DOMContentLoaded",()=>{
 CONTRACT = """pub async fn serve(app : AsgiApp, host? : String, port? : Int, backlog? : Int) -> Unit
 pub async fn serve_config(app : AsgiApp, config : Config) -> Unit
 pub async fn serve_tls(app : AsgiApp, certificate_file~, private_key_file~, pfx_file~, ...) -> Unit
+pub async fn serve_graceful(app : AsgiApp, config : Config, handle? : ShutdownHandle) -> Unit
 
 // One socket -> Scope / Receive / Send -> your moonasgi app:
 //   HTTP/1.1 request  ->  Http scope     ->  HttpResponseStart + HttpResponseBody
 //   Upgrade: websocket ->  WebSocket scope -> connect/accept/receive/send/close
-//   process boundary  ->  Lifespan scope ->  startup ... shutdown"""
+//   process boundary  ->  Lifespan scope ->  startup ... shutdown
+//   handle.shutdown() ->  stop accepting -> drain -> lifespan shutdown -> close"""
 
 
 def esc(t):
@@ -223,7 +230,7 @@ def main():
             'drive your app — exactly the role uvicorn plays for Python.</p>'
             '<div class="badges">'
             '<a href="https://github.com/Lfan-ke/mooncat/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Lfan-ke/mooncat/ci.yml?branch=master&label=CI&logo=github"></a>'
-            '<img alt="tests" src="https://img.shields.io/badge/tests-7%20passing%20(native)-0ca678">'
+            '<img alt="tests" src="https://img.shields.io/badge/tests-10%20passing%20(native)-0ca678">'
             '<a href="https://github.com/Lfan-ke/mooncat"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-source-24292f?logo=github"></a>'
             '<img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d5efc"></div>'
             '<div class="install"><span class="prompt">$</span><code>moon add Lfan-ke/mooncat</code>'

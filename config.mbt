@@ -27,6 +27,7 @@ pub(all) struct Config {
   server_headers : Map[String, String]
   max_connections : Int?
   allow_failure : Bool
+  graceful_timeout : Int?
 }
 
 ///|
@@ -35,6 +36,11 @@ pub(all) struct Config {
 /// own defaults: `reuse_addr` on (uvicorn sets `SO_REUSEADDR`), single-stack
 /// binding, no extra response headers, an unbounded connection ceiling, and
 /// `allow_failure` on so a single failing handler never crashes the listener.
+///
+/// `graceful_timeout` bounds how long `serve_graceful` waits for in-flight
+/// requests to drain before it runs lifespan shutdown anyway (← uvicorn's
+/// `timeout_graceful_shutdown`); `None` waits until the last request finishes,
+/// as uvicorn does by default.
 pub fn Config::new(
   host? : String = "127.0.0.1",
   port? : Int = 8000,
@@ -44,6 +50,7 @@ pub fn Config::new(
   server_headers? : Map[String, String] = Map([]),
   max_connections? : Int? = None,
   allow_failure? : Bool = true,
+  graceful_timeout? : Int? = None,
 ) -> Config {
   {
     host,
@@ -54,6 +61,7 @@ pub fn Config::new(
     server_headers,
     max_connections,
     allow_failure,
+    graceful_timeout,
   }
 }
 

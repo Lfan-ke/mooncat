@@ -56,6 +56,23 @@ Each accepted connection completes a real TLS handshake (`@tls.Tls`), then a **s
 - `moonbitlang/async` exposes its **server-side** TLS constructor as `#internal` ("for internal testing only") — it is the only such entry point, and the async suite itself serves HTTPS through it — so mooncat opts into that one alert (`warnings = "-alert_internal"` in `moon.pkg`) and will migrate the moment a public API lands.
 - **WebSocket-over-TLS (`wss://`) is not bridged**: the async websocket upgrade needs an `@http.ServerConnection`, which is welded to `@socket.Tcp` and cannot wrap a `@tls.Tls` stream. Plaintext `serve` keeps full WebSocket support; this is a transport-capability boundary, not a behavioural choice.
 
+## Process model
+
+`serve_graceful` runs the app under uvicorn's process model — a graceful shutdown and a `--reload` file watcher:
+
+```moonbit
+let handle = @mooncat.ShutdownHandle::new()
+g.spawn(() => @mooncat.serve_graceful(app, @mooncat.Config::new(port=8000), handle~))
+// … later, from anywhere:
+handle.shutdown()   // stop accepting → drain in-flight → lifespan shutdown → close
+```
+
+`handle.shutdown()` blocks until the port is free again. The sequence is fixed and verified end-to-end in CI: a slow request that is still in flight when shutdown fires is allowed to finish (the client still sees `200`) **before** lifespan shutdown runs, and the listener is closed only afterwards — a real socket integration test pins the ordering, and a mutation test (running lifespan shutdown before the drain) turns it red. A shutdown can also come from a signal: wire `@signal.set_global_cancellation_signals` and mooncat runs lifespan shutdown + close under `protect_from_cancel` on the way down.
+
+`reload_watch(dir, on_reload)` watches a source tree with `@fs.Watcher` and fires `on_reload` on each change — hook it to a `ShutdownHandle` to turn a file save into a graceful restart.
+
+**Multi-worker boundary** (honest, not a stub): uvicorn's `--workers` forks N OS processes that share the port via `SO_REUSEPORT`. `moonbitlang/async` exposes neither `SO_REUSEPORT` nor a fork primitive, and its event loop permits only one outstanding `accept` per listener (a second concurrent `accept` on the same handle aborts), so N in-process acceptor tasks aren't expressible. mooncat serves from one acceptor that spawns a concurrent handler per connection — the same concurrency a single uvicorn worker gives on its one event loop. Multi-process fan-out lands when the async layer exposes `SO_REUSEPORT` or fork.
+
 ## Status
 
 `v0` — HTTP/1.1 request → ASGI `Scope`/`Receive`/`Send` → response is **working and verified by a real socket round-trip in CI** (a server task answers a live `@http.get`). Landed and CI-verified alongside it:
@@ -64,7 +81,7 @@ Each accepted connection completes a real TLS handshake (`@tls.Tls`), then a **s
 - the **full WebSocket frame↔`Event` bridge** — a `Connection: upgrade` + `Upgrade: websocket` handshake becomes a `websocket` `Scope` driven through the moonasgi SEAM: `receive()` emits `websocket.connect` then real inbound text/binary frames as `WebSocketReceive` (streamed through the `Message`-as-`Reader`, so fragments reassemble) and a peer close as `WebSocketDisconnect(code)`; `send()` turns `WebSocketAccept` into the deferred 101 handshake, `WebSocketSendText`/`WebSocketSendBytes` into message frames, and `WebSocketClose(code, reason)` into a close frame. Rejecting before accept answers `403`; ping/pong are auto-handled at the protocol layer (as in uvicorn). Proven by a **real `@websocket` client** doing a full text + binary round-trip and a clean close in CI;
 - a `Config` exposing the HTTP/1.1 transport knobs the async server honours — `dual_stack`, `reuse_addr`, per-server response `headers`, `max_connections`, and `allow_failure` — on top of host/port/backlog. Keep-alive and chunked request/response framing are handled automatically by the async transport.
 
-**HTTPS/TLS serving** landed too — see the section below. Roadmap, transliterated from uvicorn feature-by-feature: subprotocol echo into the 101 response (awaits a transport hook), the self-built HTTP/1.1 parser knobs (`Expect: 100-continue`, buffer limits), further TLS detail (ciphers/mTLS), and the multi-process prefork supervisor with `--reload`.
+**HTTPS/TLS serving** and the **graceful-shutdown + `--reload` process model** landed too — see the sections above. Roadmap, transliterated from uvicorn feature-by-feature: subprotocol echo into the 101 response (awaits a transport hook), the self-built HTTP/1.1 parser knobs (`Expect: 100-continue`, buffer limits), further TLS detail (ciphers/mTLS), and multi-process prefork once the async layer exposes `SO_REUSEPORT` or fork.
 
 ## Native only
 

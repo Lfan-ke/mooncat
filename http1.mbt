@@ -165,6 +165,7 @@ async fn dispatch_http1(
   req : Http1Request,
   reader : &@io.Reader,
   writer : &@io.Writer,
+  scheme~ : String,
 ) -> Bool {
   let (path, query) = split_query(req.target)
   let scope = @moonasgi.Scope::Http({
@@ -174,7 +175,7 @@ async fn dispatch_http1(
       "1.1"
     },
     http_method: req.http_method,
-    scheme: "https",
+    scheme,
     path,
     raw_path: @utf8.encode(path),
     query_string: @utf8.encode(query),

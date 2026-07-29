@@ -5,11 +5,14 @@
 // flow-control frames land in later bricks on the same varint machinery.
 
 ///|
-/// A decoded QUIC frame. `Padding` collapses a run of zero bytes to its length.
+/// A decoded QUIC frame. `Padding` collapses a run of zero bytes to its length;
+/// `Stream` carries application data on a stream, with a byte `offset` and a `fin`
+/// flag marking the end of the stream (RFC 9000 §19.8).
 pub(all) enum QuicFrame {
   Padding(Int)
   Ping
   Crypto(offset~ : UInt64, data~ : Bytes)
+  Stream(id~ : UInt64, offset~ : UInt64, fin~ : Bool, data~ : Bytes)
 } derive(Eq, Debug)
 
 ///|
@@ -24,6 +27,16 @@ pub fn encode_frame(f : QuicFrame) -> Bytes {
     Ping => buf.write_bytes(quic_varint_encode(1UL)[:])
     Crypto(offset~, data~) => {
       buf.write_bytes(quic_varint_encode(6UL)[:])
+      buf.write_bytes(quic_varint_encode(offset)[:])
+      buf.write_bytes(quic_varint_encode(data.length().to_uint64())[:])
+      buf.write_bytes(data[:])
+    }
+    Stream(id~, offset~, fin~, data~) => {
+      // Always emit with the OFF and LEN bits set (0x0e) so the frame is
+      // self-delimiting; the FIN bit rides the low bit.
+      let type_byte = 0x0e | (if fin { 1 } else { 0 })
+      buf.write_bytes(quic_varint_encode(type_byte.to_uint64())[:])
+      buf.write_bytes(quic_varint_encode(id)[:])
       buf.write_bytes(quic_varint_encode(offset)[:])
       buf.write_bytes(quic_varint_encode(data.length().to_uint64())[:])
       buf.write_bytes(data[:])
@@ -64,6 +77,42 @@ pub fn parse_frame(b : BytesView) -> (QuicFrame, Int)? {
       let data = b[off:off + dlen].to_owned()
       off = off + dlen
       Some((Crypto(offset~, data~), off))
+    }
+    ty if ty >= 8UL && ty <= 15UL => {
+      let ti = ty.to_int()
+      let has_off = (ti & 0x04) != 0
+      let has_len = (ti & 0x02) != 0
+      let fin = (ti & 0x01) != 0
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((id, ilen)) else { return None }
+      off = off + ilen
+      let mut offset = 0UL
+      if has_off {
+        guard quic_varint_decode(b[off:]) is Some((o, olen)) else {
+          return None
+        }
+        offset = o
+        off = off + olen
+      }
+      let data = if has_len {
+        guard quic_varint_decode(b[off:]) is Some((length, llen)) else {
+          return None
+        }
+        off = off + llen
+        let dlen = length.to_int()
+        if b.length() < off + dlen {
+          return None
+        }
+        let d = b[off:off + dlen].to_owned()
+        off = off + dlen
+        d
+      } else {
+        // No length field: the stream data runs to the end of the buffer.
+        let d = b[off:].to_owned()
+        off = b.length()
+        d
+      }
+      Some((Stream(id~, offset~, fin~, data~), off))
     }
     _ => None
   }

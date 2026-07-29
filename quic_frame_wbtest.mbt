@@ -50,3 +50,41 @@ test "a truncated CRYPTO frame parses to None" {
   // Declares 4 bytes of crypto data but supplies only 1.
   assert_eq(parse_frame(qv_hexb("060004aa")[:]) is None, true)
 }
+
+///|
+test "STREAM frame round-trips with offset, length, and FIN (RFC 9000 §19.8)" {
+  // type 0e (OFF + LEN), stream 4, offset 0, length 5, data "hello".
+  let f : QuicFrame = Stream(
+    id=4UL,
+    offset=0UL,
+    fin=false,
+    data=qv_hexb("68656c6c6f"),
+  )
+  assert_eq(qv_hex(encode_frame(f)), "0e04000568656c6c6f")
+  match parse_frame(qv_hexb("0e04000568656c6c6f")[:]) {
+    Some((g, n)) => {
+      assert_eq(g, f)
+      assert_eq(n, 9)
+    }
+    None => fail("expected a STREAM frame")
+  }
+  // FIN rides the low bit of the type (0f).
+  let ff : QuicFrame = Stream(id=4UL, offset=10UL, fin=true, data=qv_hexb("78"))
+  assert_eq(qv_hex(encode_frame(ff)), "0f040a0178")
+  match parse_frame(qv_hexb("0f040a0178")[:]) {
+    Some((g, _)) => assert_eq(g, ff)
+    None => fail("expected a STREAM frame with FIN")
+  }
+}
+
+///|
+test "a STREAM frame with no length field runs to the end of the buffer" {
+  // type 0c = OFF set, LEN clear: stream id, offset, then data to the end.
+  match parse_frame(qv_hexb("0c0400aabb")[:]) {
+    Some((g, n)) => {
+      assert_eq(g, Stream(id=4UL, offset=0UL, fin=false, data=qv_hexb("aabb")))
+      assert_eq(n, 5)
+    }
+    None => fail("expected a length-less STREAM frame")
+  }
+}

@@ -110,6 +110,52 @@ test "a truncated ACK frame parses to None" {
 }
 
 ///|
+test "MAX_DATA and HANDSHAKE_DONE frames round-trip (RFC 9000 §19.9 / §19.20)" {
+  assert_eq(qv_hex(encode_frame(MaxData(15293UL))), "107bbd")
+  match parse_frame(qv_hexb("107bbd")[:]) {
+    Some((g, n)) => {
+      assert_eq(g, MaxData(15293UL))
+      assert_eq(n, 3)
+    }
+    None => fail("expected MAX_DATA")
+  }
+  assert_eq(qv_hex(encode_frame(HandshakeDone)), "1e")
+  match parse_frame(qv_hexb("1e")[:]) {
+    Some((g, n)) => {
+      assert_eq(g, HandshakeDone)
+      assert_eq(n, 1)
+    }
+    None => fail("expected HANDSHAKE_DONE")
+  }
+}
+
+///|
+test "CONNECTION_CLOSE transport and application variants (RFC 9000 §19.19)" {
+  // Transport close (0x1c): error code, triggering frame type, reason.
+  let t : QuicFrame = ConnectionClose(
+    error_code=7UL,
+    frame_type=Some(8UL),
+    reason=qv_hexb("6279"),
+  )
+  assert_eq(qv_hex(encode_frame(t)), "1c0708026279")
+  match parse_frame(qv_hexb("1c0708026279")[:]) {
+    Some((g, _)) => assert_eq(g, t)
+    None => fail("expected a transport CONNECTION_CLOSE")
+  }
+  // Application close (0x1d): error code, reason, no frame type.
+  let a : QuicFrame = ConnectionClose(
+    error_code=1UL,
+    frame_type=None,
+    reason=qv_hexb(""),
+  )
+  assert_eq(qv_hex(encode_frame(a)), "1d0100")
+  match parse_frame(qv_hexb("1d0100")[:]) {
+    Some((g, _)) => assert_eq(g, a)
+    None => fail("expected an application CONNECTION_CLOSE")
+  }
+}
+
+///|
 test "a STREAM frame with no length field runs to the end of the buffer" {
   // type 0c = OFF set, LEN clear: stream id, offset, then data to the end.
   match parse_frame(qv_hexb("0c0400aabb")[:]) {

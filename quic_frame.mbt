@@ -19,6 +19,11 @@ pub(all) enum QuicFrame {
     first_range~ : UInt64,
     ranges~ : Array[(UInt64, UInt64)]
   )
+  MaxData(UInt64)
+  HandshakeDone
+  // `frame_type` is `Some` for a transport-error close (0x1c) and `None` for an
+  // application-error close (0x1d), which omits the triggering frame type.
+  ConnectionClose(error_code~ : UInt64, frame_type~ : UInt64?, reason~ : Bytes)
 } derive(Eq, Debug)
 
 ///|
@@ -58,6 +63,26 @@ pub fn encode_frame(f : QuicFrame) -> Bytes {
         buf.write_bytes(quic_varint_encode(gap)[:])
         buf.write_bytes(quic_varint_encode(len)[:])
       }
+    }
+    MaxData(v) => {
+      buf.write_bytes(quic_varint_encode(0x10UL)[:])
+      buf.write_bytes(quic_varint_encode(v)[:])
+    }
+    HandshakeDone => buf.write_bytes(quic_varint_encode(0x1eUL)[:])
+    ConnectionClose(error_code~, frame_type~, reason~) => {
+      match frame_type {
+        Some(ft) => {
+          buf.write_bytes(quic_varint_encode(0x1cUL)[:])
+          buf.write_bytes(quic_varint_encode(error_code)[:])
+          buf.write_bytes(quic_varint_encode(ft)[:])
+        }
+        None => {
+          buf.write_bytes(quic_varint_encode(0x1dUL)[:])
+          buf.write_bytes(quic_varint_encode(error_code)[:])
+        }
+      }
+      buf.write_bytes(quic_varint_encode(reason.length().to_uint64())[:])
+      buf.write_bytes(reason[:])
     }
   }
   buf.to_bytes()
@@ -163,6 +188,45 @@ pub fn parse_frame(b : BytesView) -> (QuicFrame, Int)? {
         d
       }
       Some((Stream(id~, offset~, fin~, data~), off))
+    }
+    0x10UL => {
+      guard quic_varint_decode(b[tlen:]) is Some((v, vl)) else { return None }
+      Some((MaxData(v), tlen + vl))
+    }
+    0x1eUL => Some((HandshakeDone, tlen))
+    0x1cUL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((error_code, l1)) else {
+        return None
+      }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((ft, l2)) else { return None }
+      off = off + l2
+      guard quic_varint_decode(b[off:]) is Some((rlen, l3)) else { return None }
+      off = off + l3
+      let n = rlen.to_int()
+      if b.length() < off + n {
+        return None
+      }
+      let reason = b[off:off + n].to_owned()
+      off = off + n
+      Some((ConnectionClose(error_code~, frame_type=Some(ft), reason~), off))
+    }
+    0x1dUL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((error_code, l1)) else {
+        return None
+      }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((rlen, l2)) else { return None }
+      off = off + l2
+      let n = rlen.to_int()
+      if b.length() < off + n {
+        return None
+      }
+      let reason = b[off:off + n].to_owned()
+      off = off + n
+      Some((ConnectionClose(error_code~, frame_type=None, reason~), off))
     }
     _ => None
   }

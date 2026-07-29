@@ -1,8 +1,11 @@
-// QUIC frames (RFC 9000 §19) — the content carried inside a packet's payload.
-// This brick covers the frames the handshake needs: PADDING (§19.1), PING (§19.2),
-// and CRYPTO (§19.6), which carries the TLS handshake bytes. Each frame starts with
-// a varint type; CRYPTO's offset and length are varints too. STREAM/ACK and the
-// flow-control frames land in later bricks on the same varint machinery.
+// QUIC frames (RFC 9000 §19) — the content carried inside a packet's payload. Each
+// frame starts with a varint type; its fields are varints too, except the fixed-width
+// connection-ID tokens and path-validation data. This covers the full §19 frame set:
+// PADDING/PING/ACK, CRYPTO and STREAM, the flow-control family (MAX_*, *_BLOCKED),
+// the stream-control frames (RESET_STREAM/STOP_SENDING), connection management
+// (NEW_CONNECTION_ID/RETIRE_CONNECTION_ID/NEW_TOKEN), path validation
+// (PATH_CHALLENGE/PATH_RESPONSE), and the lifecycle frames
+// (HANDSHAKE_DONE/CONNECTION_CLOSE).
 
 ///|
 /// A decoded QUIC frame. `Padding` collapses a run of zero bytes to its length;
@@ -19,7 +22,25 @@ pub(all) enum QuicFrame {
     first_range~ : UInt64,
     ranges~ : Array[(UInt64, UInt64)]
   )
+  ResetStream(id~ : UInt64, error_code~ : UInt64, final_size~ : UInt64)
+  StopSending(id~ : UInt64, error_code~ : UInt64)
+  NewToken(token~ : Bytes)
   MaxData(UInt64)
+  MaxStreamData(id~ : UInt64, max~ : UInt64)
+  // `bidi` selects the 0x12/0x16 (bidirectional) vs 0x13/0x17 (unidirectional) type.
+  MaxStreams(bidi~ : Bool, max~ : UInt64)
+  DataBlocked(UInt64)
+  StreamDataBlocked(id~ : UInt64, max~ : UInt64)
+  StreamsBlocked(bidi~ : Bool, max~ : UInt64)
+  NewConnectionId(
+    seq~ : UInt64,
+    retire_prior_to~ : UInt64,
+    conn_id~ : Bytes,
+    reset_token~ : Bytes
+  )
+  RetireConnectionId(UInt64)
+  PathChallenge(Bytes)
+  PathResponse(Bytes)
   HandshakeDone
   // `frame_type` is `Some` for a transport-error close (0x1c) and `None` for an
   // application-error close (0x1d), which omits the triggering frame type.
@@ -64,9 +85,67 @@ pub fn encode_frame(f : QuicFrame) -> Bytes {
         buf.write_bytes(quic_varint_encode(len)[:])
       }
     }
+    ResetStream(id~, error_code~, final_size~) => {
+      buf.write_bytes(quic_varint_encode(4UL)[:])
+      buf.write_bytes(quic_varint_encode(id)[:])
+      buf.write_bytes(quic_varint_encode(error_code)[:])
+      buf.write_bytes(quic_varint_encode(final_size)[:])
+    }
+    StopSending(id~, error_code~) => {
+      buf.write_bytes(quic_varint_encode(5UL)[:])
+      buf.write_bytes(quic_varint_encode(id)[:])
+      buf.write_bytes(quic_varint_encode(error_code)[:])
+    }
+    NewToken(token~) => {
+      buf.write_bytes(quic_varint_encode(7UL)[:])
+      buf.write_bytes(quic_varint_encode(token.length().to_uint64())[:])
+      buf.write_bytes(token[:])
+    }
     MaxData(v) => {
       buf.write_bytes(quic_varint_encode(0x10UL)[:])
       buf.write_bytes(quic_varint_encode(v)[:])
+    }
+    MaxStreamData(id~, max~) => {
+      buf.write_bytes(quic_varint_encode(0x11UL)[:])
+      buf.write_bytes(quic_varint_encode(id)[:])
+      buf.write_bytes(quic_varint_encode(max)[:])
+    }
+    MaxStreams(bidi~, max~) => {
+      buf.write_bytes(quic_varint_encode(if bidi { 0x12UL } else { 0x13UL })[:])
+      buf.write_bytes(quic_varint_encode(max)[:])
+    }
+    DataBlocked(v) => {
+      buf.write_bytes(quic_varint_encode(0x14UL)[:])
+      buf.write_bytes(quic_varint_encode(v)[:])
+    }
+    StreamDataBlocked(id~, max~) => {
+      buf.write_bytes(quic_varint_encode(0x15UL)[:])
+      buf.write_bytes(quic_varint_encode(id)[:])
+      buf.write_bytes(quic_varint_encode(max)[:])
+    }
+    StreamsBlocked(bidi~, max~) => {
+      buf.write_bytes(quic_varint_encode(if bidi { 0x16UL } else { 0x17UL })[:])
+      buf.write_bytes(quic_varint_encode(max)[:])
+    }
+    NewConnectionId(seq~, retire_prior_to~, conn_id~, reset_token~) => {
+      buf.write_bytes(quic_varint_encode(0x18UL)[:])
+      buf.write_bytes(quic_varint_encode(seq)[:])
+      buf.write_bytes(quic_varint_encode(retire_prior_to)[:])
+      buf.write_byte(conn_id.length().to_byte())
+      buf.write_bytes(conn_id[:])
+      buf.write_bytes(reset_token[:])
+    }
+    RetireConnectionId(seq) => {
+      buf.write_bytes(quic_varint_encode(0x19UL)[:])
+      buf.write_bytes(quic_varint_encode(seq)[:])
+    }
+    PathChallenge(data) => {
+      buf.write_bytes(quic_varint_encode(0x1aUL)[:])
+      buf.write_bytes(data[:])
+    }
+    PathResponse(data) => {
+      buf.write_bytes(quic_varint_encode(0x1bUL)[:])
+      buf.write_bytes(data[:])
     }
     HandshakeDone => buf.write_bytes(quic_varint_encode(0x1eUL)[:])
     ConnectionClose(error_code~, frame_type~, reason~) => {
@@ -189,9 +268,115 @@ pub fn parse_frame(b : BytesView) -> (QuicFrame, Int)? {
       }
       Some((Stream(id~, offset~, fin~, data~), off))
     }
+    4UL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((id, l1)) else { return None }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((error_code, l2)) else {
+        return None
+      }
+      off = off + l2
+      guard quic_varint_decode(b[off:]) is Some((final_size, l3)) else {
+        return None
+      }
+      off = off + l3
+      Some((ResetStream(id~, error_code~, final_size~), off))
+    }
+    5UL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((id, l1)) else { return None }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((error_code, l2)) else {
+        return None
+      }
+      off = off + l2
+      Some((StopSending(id~, error_code~), off))
+    }
+    7UL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((length, ll)) else {
+        return None
+      }
+      off = off + ll
+      let n = length.to_int()
+      if b.length() < off + n {
+        return None
+      }
+      let token = b[off:off + n].to_owned()
+      off = off + n
+      Some((NewToken(token~), off))
+    }
     0x10UL => {
       guard quic_varint_decode(b[tlen:]) is Some((v, vl)) else { return None }
       Some((MaxData(v), tlen + vl))
+    }
+    0x11UL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((id, l1)) else { return None }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((max, l2)) else { return None }
+      off = off + l2
+      Some((MaxStreamData(id~, max~), off))
+    }
+    ty if ty == 0x12UL || ty == 0x13UL => {
+      guard quic_varint_decode(b[tlen:]) is Some((max, vl)) else { return None }
+      Some((MaxStreams(bidi=ty == 0x12UL, max~), tlen + vl))
+    }
+    0x14UL => {
+      guard quic_varint_decode(b[tlen:]) is Some((v, vl)) else { return None }
+      Some((DataBlocked(v), tlen + vl))
+    }
+    0x15UL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((id, l1)) else { return None }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((max, l2)) else { return None }
+      off = off + l2
+      Some((StreamDataBlocked(id~, max~), off))
+    }
+    ty if ty == 0x16UL || ty == 0x17UL => {
+      guard quic_varint_decode(b[tlen:]) is Some((max, vl)) else { return None }
+      Some((StreamsBlocked(bidi=ty == 0x16UL, max~), tlen + vl))
+    }
+    0x18UL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((seq, l1)) else { return None }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((retire_prior_to, l2)) else {
+        return None
+      }
+      off = off + l2
+      if b.length() < off + 1 {
+        return None
+      }
+      let cid_len = b[off].to_int()
+      off = off + 1
+      if b.length() < off + cid_len + 16 {
+        return None
+      }
+      let conn_id = b[off:off + cid_len].to_owned()
+      off = off + cid_len
+      let reset_token = b[off:off + 16].to_owned()
+      off = off + 16
+      Some(
+        (NewConnectionId(seq~, retire_prior_to~, conn_id~, reset_token~), off),
+      )
+    }
+    0x19UL => {
+      guard quic_varint_decode(b[tlen:]) is Some((seq, vl)) else { return None }
+      Some((RetireConnectionId(seq), tlen + vl))
+    }
+    0x1aUL => {
+      if b.length() < tlen + 8 {
+        return None
+      }
+      Some((PathChallenge(b[tlen:tlen + 8].to_owned()), tlen + 8))
+    }
+    0x1bUL => {
+      if b.length() < tlen + 8 {
+        return None
+      }
+      Some((PathResponse(b[tlen:tlen + 8].to_owned()), tlen + 8))
     }
     0x1eUL => Some((HandshakeDone, tlen))
     0x1cUL => {

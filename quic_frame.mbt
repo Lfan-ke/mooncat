@@ -13,6 +13,12 @@ pub(all) enum QuicFrame {
   Ping
   Crypto(offset~ : UInt64, data~ : Bytes)
   Stream(id~ : UInt64, offset~ : UInt64, fin~ : Bool, data~ : Bytes)
+  Ack(
+    largest~ : UInt64,
+    delay~ : UInt64,
+    first_range~ : UInt64,
+    ranges~ : Array[(UInt64, UInt64)]
+  )
 } derive(Eq, Debug)
 
 ///|
@@ -41,6 +47,18 @@ pub fn encode_frame(f : QuicFrame) -> Bytes {
       buf.write_bytes(quic_varint_encode(data.length().to_uint64())[:])
       buf.write_bytes(data[:])
     }
+    Ack(largest~, delay~, first_range~, ranges~) => {
+      buf.write_bytes(quic_varint_encode(2UL)[:])
+      buf.write_bytes(quic_varint_encode(largest)[:])
+      buf.write_bytes(quic_varint_encode(delay)[:])
+      buf.write_bytes(quic_varint_encode(ranges.length().to_uint64())[:])
+      buf.write_bytes(quic_varint_encode(first_range)[:])
+      for r in ranges {
+        let (gap, len) = r
+        buf.write_bytes(quic_varint_encode(gap)[:])
+        buf.write_bytes(quic_varint_encode(len)[:])
+      }
+    }
   }
   buf.to_bytes()
 }
@@ -60,6 +78,38 @@ pub fn parse_frame(b : BytesView) -> (QuicFrame, Int)? {
       Some((Padding(n), n))
     }
     1UL => Some((Ping, tlen))
+    2UL => {
+      let mut off = tlen
+      guard quic_varint_decode(b[off:]) is Some((largest, l1)) else {
+        return None
+      }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((delay, l2)) else {
+        return None
+      }
+      off = off + l2
+      guard quic_varint_decode(b[off:]) is Some((count, l3)) else {
+        return None
+      }
+      off = off + l3
+      guard quic_varint_decode(b[off:]) is Some((first_range, l4)) else {
+        return None
+      }
+      off = off + l4
+      let ranges : Array[(UInt64, UInt64)] = []
+      for _i = 0; _i < count.to_int(); _i = _i + 1 {
+        guard quic_varint_decode(b[off:]) is Some((gap, lg)) else {
+          return None
+        }
+        off = off + lg
+        guard quic_varint_decode(b[off:]) is Some((rlen, lr)) else {
+          return None
+        }
+        off = off + lr
+        ranges.push((gap, rlen))
+      }
+      Some((Ack(largest~, delay~, first_range~, ranges~), off))
+    }
     6UL => {
       let mut off = tlen
       guard quic_varint_decode(b[off:]) is Some((offset, olen)) else {

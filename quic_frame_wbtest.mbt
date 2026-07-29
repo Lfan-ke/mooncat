@@ -78,6 +78,38 @@ test "STREAM frame round-trips with offset, length, and FIN (RFC 9000 §19.8)" {
 }
 
 ///|
+test "ACK frame encodes and parses per RFC 9000 §19.3" {
+  // largest 10, delay 0, no additional ranges, first range 3.
+  let f : QuicFrame = Ack(largest=10UL, delay=0UL, first_range=3UL, ranges=[])
+  assert_eq(qv_hex(encode_frame(f)), "020a000003")
+  match parse_frame(qv_hexb("020a000003")[:]) {
+    Some((g, n)) => {
+      assert_eq(g, f)
+      assert_eq(n, 5)
+    }
+    None => fail("expected an ACK frame")
+  }
+  // With one extra range: gap 1, range length 3.
+  let f2 : QuicFrame = Ack(largest=10UL, delay=0UL, first_range=2UL, ranges=[
+    (1UL, 3UL),
+  ])
+  assert_eq(qv_hex(encode_frame(f2)), "020a0001020103")
+  match parse_frame(qv_hexb("020a0001020103")[:]) {
+    Some((g, n)) => {
+      assert_eq(g, f2)
+      assert_eq(n, 7)
+    }
+    None => fail("expected an ACK frame with a range")
+  }
+}
+
+///|
+test "a truncated ACK frame parses to None" {
+  // Declares one range but supplies no gap/length pair.
+  assert_eq(parse_frame(qv_hexb("020a000102")[:]) is None, true)
+}
+
+///|
 test "a STREAM frame with no length field runs to the end of the buffer" {
   // type 0c = OFF set, LEN clear: stream id, offset, then data to the end.
   match parse_frame(qv_hexb("0c0400aabb")[:]) {

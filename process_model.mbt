@@ -229,7 +229,13 @@ async test "graceful shutdown drains in-flight, runs lifespan shutdown, then clo
           }
         Http(_) => {
           @async.sleep(300)
-          send(@moonasgi.Event::HttpResponseStart(status=200, headers=[]))
+          send(
+            @moonasgi.Event::HttpResponseStart(
+              status=200,
+              headers=[],
+              trailers=false,
+            ),
+          )
           send(
             @moonasgi.Event::HttpResponseBody(body=b"drained", more_body=false),
           )
@@ -272,7 +278,13 @@ async test "concurrent request burst is served by per-connection handlers" {
     let app : @moonasgi.AsgiApp = (scope, _receive, send) => {
       guard scope is Http(_) else { return }
       @async.sleep(80)
-      send(@moonasgi.Event::HttpResponseStart(status=200, headers=[]))
+      send(
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[],
+          trailers=false,
+        ),
+      )
       send(@moonasgi.Event::HttpResponseBody(body=b"ok", more_body=false))
     }
     let srv = g.spawn(() => {

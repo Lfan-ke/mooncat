@@ -53,7 +53,10 @@ pub fn Lifespan::spawn(
       _ => ()
     }
   }
-  let scope = @moonasgi.Scope::Lifespan({ state: self.state })
+  let scope = @moonasgi.Scope::Lifespan({
+    asgi: @moonasgi.AsgiVersion::lifespan(),
+    state: self.state,
+  })
   g.spawn(() => (self.app)(scope, receive, send))
 }
 

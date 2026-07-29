@@ -150,6 +150,8 @@ async fn handle_websocket(
     client: None,
     server: None,
     subprotocols: parse_subprotocols(request.headers),
+    asgi: @moonasgi.AsgiVersion::websocket(),
+    extensions: @moonasgi.Extensions::none(),
     state: Map([]),
   })
   let ws_ref : Ref[@websocket.Conn?] = Ref(None)
@@ -161,10 +163,10 @@ async fn handle_websocket(
       return @moonasgi.Event::WebSocketConnect
     }
     if disconnected.val {
-      return @moonasgi.Event::WebSocketDisconnect(code=1006)
+      return @moonasgi.Event::WebSocketDisconnect(code=1006, reason=None)
     }
     match ws_ref.val {
-      None => @moonasgi.Event::WebSocketDisconnect(code=1006)
+      None => @moonasgi.Event::WebSocketDisconnect(code=1006, reason=None)
       Some(ws) =>
         try {
           let msg = ws.recv()
@@ -183,11 +185,14 @@ async fn handle_websocket(
         } catch {
           @websocket.ConnectionClosed(code, _) => {
             disconnected.val = true
-            @moonasgi.Event::WebSocketDisconnect(code=close_code_int(code))
+            @moonasgi.Event::WebSocketDisconnect(
+              code=close_code_int(code),
+              reason=None,
+            )
           }
           _ => {
             disconnected.val = true
-            @moonasgi.Event::WebSocketDisconnect(code=1006)
+            @moonasgi.Event::WebSocketDisconnect(code=1006, reason=None)
           }
         }
     }

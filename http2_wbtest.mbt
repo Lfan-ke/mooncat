@@ -119,9 +119,11 @@ async test "h2c: a real HTTP/2 client GETs a route and reads 200 + body + header
     let app : @moonasgi.AsgiApp = (scope, _receive, send) => {
       guard scope is Http(_) else { return }
       send(
-        @moonasgi.Event::HttpResponseStart(status=200, headers=[
-          ("content-type", "text/plain"),
-        ]),
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[("content-type", "text/plain")],
+          trailers=false,
+        ),
       )
       send(
         @moonasgi.Event::HttpResponseBody(
@@ -152,7 +154,13 @@ async test "h2c: a POST body reaches the app as the receive body and echoes back
         HttpRequest(body~, ..) => body
         _ => b""
       }
-      send(@moonasgi.Event::HttpResponseStart(status=200, headers=[]))
+      send(
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[],
+          trailers=false,
+        ),
+      )
       send(@moonasgi.Event::HttpResponseBody(body~, more_body=false))
     }
     let task = g.spawn(() => serve_h2c(app, port=18101))
@@ -183,7 +191,13 @@ async test "h2c: a large response is clamped to the peer's small stream window" 
     let payload = Bytes::make(1000, b'z')
     let app : @moonasgi.AsgiApp = (scope, _receive, send) => {
       guard scope is Http(_) else { return }
-      send(@moonasgi.Event::HttpResponseStart(status=200, headers=[]))
+      send(
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[],
+          trailers=false,
+        ),
+      )
       send(@moonasgi.Event::HttpResponseBody(body=payload, more_body=false))
     }
     let task = g.spawn(() => serve_h2c(app, port=18103))
@@ -262,7 +276,13 @@ async test "h2c: two streams multiplex on one connection and each gets its reply
   @async.with_task_group(g => {
     let app : @moonasgi.AsgiApp = (scope, _receive, send) => {
       guard scope is Http(http_scope) else { return }
-      send(@moonasgi.Event::HttpResponseStart(status=200, headers=[]))
+      send(
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[],
+          trailers=false,
+        ),
+      )
       send(
         @moonasgi.Event::HttpResponseBody(
           body=h2_str_to_bytes("path=\{http_scope.path}"),

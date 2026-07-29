@@ -362,6 +362,8 @@ fn h2_build_scope(headers : Array[@moonrpc.Header]) -> @moonasgi.Scope {
     headers: pairs,
     client: None,
     server: None,
+    asgi: @moonasgi.AsgiVersion::http(),
+    extensions: @moonasgi.Extensions::none(),
     state: Map([]),
   })
 }
@@ -397,7 +399,7 @@ async fn H2Conn::dispatch_stream(
   let ended = Ref(false)
   let send : @moonasgi.Send = event => {
     match event {
-      HttpResponseStart(status~, headers~) => {
+      HttpResponseStart(status~, headers~, ..) => {
         started.val = true
         let block = self.enc.encode(h2_response_headers(status, headers))
         self.conn.write(

@@ -1,6 +1,6 @@
 name = "Lfan-ke/mooncat"
 
-version = "0.6.1"
+version = "0.6.2"
 
 readme = "README.md"
 
@@ -23,8 +23,8 @@ description = "mooncat — a native ASGI 3.0 server for MoonBit (← uvicorn), b
 preferred_target = "native"
 
 import {
-  "Lfan-ke/moonasgi@0.1.0",
+  "Lfan-ke/moonasgi@0.6.1",
   "moonbitlang/async@0.20.3",
-  "Lfan-ke/moonapi@0.5.0",
+  "Lfan-ke/moonapi@0.6.2",
   "Lfan-ke/moonrpc@0.6.0",
 }

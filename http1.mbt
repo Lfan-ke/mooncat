@@ -183,6 +183,8 @@ async fn dispatch_http1(
     headers: headers_to_pairs(req.headers),
     client: None,
     server: None,
+    asgi: @moonasgi.AsgiVersion::http(),
+    extensions: @moonasgi.Extensions::none(),
     state: Map([]),
   })
   let body_sent = Ref(false)
@@ -220,7 +222,7 @@ async fn dispatch_http1(
   }
   let send : @moonasgi.Send = event => {
     match event {
-      HttpResponseStart(status~, headers~) => {
+      HttpResponseStart(status~, headers~, ..) => {
         resp_status.val = status
         resp_headers.val = headers
       }

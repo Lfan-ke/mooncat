@@ -96,6 +96,8 @@ async fn dispatch(
     headers: headers_to_pairs(request.headers),
     client: None,
     server: None,
+    asgi: @moonasgi.AsgiVersion::http(),
+    extensions: @moonasgi.Extensions::none(),
     state: Map([]),
   })
   let body_done = Ref(false)
@@ -116,7 +118,7 @@ async fn dispatch(
   let ended = Ref(false)
   let send : @moonasgi.Send = event => {
     match event {
-      HttpResponseStart(status~, headers~) => {
+      HttpResponseStart(status~, headers~, ..) => {
         started.val = true
         conn.send_response(
           status,
@@ -227,9 +229,11 @@ async test "serve responds 200 with body over a real socket" {
   @async.with_task_group(g => {
     let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
       send(
-        @moonasgi.Event::HttpResponseStart(status=200, headers=[
-          ("content-type", "text/plain"),
-        ]),
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[("content-type", "text/plain")],
+          trailers=false,
+        ),
       )
       send(
         @moonasgi.Event::HttpResponseBody(
@@ -295,7 +299,7 @@ async fn ws_echo_app(
           (_, Some(b)) => send(@moonasgi.Event::WebSocketSendBytes(b))
           _ => ()
         }
-      WebSocketDisconnect(_) => break
+      WebSocketDisconnect(..) => break
       _ => break
     }
   }

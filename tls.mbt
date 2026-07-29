@@ -171,9 +171,11 @@ async test "https: real TLS client GET returns 200 with body" {
   @async.with_task_group(g => {
     let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
       send(
-        @moonasgi.Event::HttpResponseStart(status=200, headers=[
-          ("content-type", "text/plain"),
-        ]),
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[("content-type", "text/plain")],
+          trailers=false,
+        ),
       )
       send(
         @moonasgi.Event::HttpResponseBody(

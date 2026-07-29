@@ -10,7 +10,9 @@ import {
   "moonbitlang/async/fs",
   "moonbitlang/async/aqueue",
   "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/buffer",
   "Lfan-ke/moonasgi",
+  "Lfan-ke/moonrpc",
 }
 
 // moonapi is a test-only dependency: the greet-readiness integration test hosts

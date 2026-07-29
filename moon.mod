@@ -26,4 +26,5 @@ import {
   "Lfan-ke/moonasgi@0.1.0",
   "moonbitlang/async@0.20.3",
   "Lfan-ke/moonapi@0.5.0",
+  "Lfan-ke/moonrpc@0.6.0",
 }

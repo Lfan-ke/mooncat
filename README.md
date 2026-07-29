@@ -75,6 +75,20 @@ handle.shutdown()   // stop accepting → drain in-flight → lifespan shutdown 
 
 **Multi-worker boundary** (honest, not a stub): uvicorn's `--workers` forks N OS processes that share the port via `SO_REUSEPORT`. `moonbitlang/async` exposes neither `SO_REUSEPORT` nor a fork primitive, and its event loop permits only one outstanding `accept` per listener (a second concurrent `accept` on the same handle aborts), so N in-process acceptor tasks aren't expressible. mooncat serves from one acceptor that spawns a concurrent handler per connection — the same concurrency a single uvicorn worker gives on its one event loop. Multi-process fan-out lands when the async layer exposes `SO_REUSEPORT` or fork.
 
+## HTTP/2 (h2c)
+
+`serve_h2c` serves the same ASGI app over **HTTP/2 cleartext** — the prior-knowledge, no-TLS HTTP/2 profile a client reaches with `curl --http2-prior-knowledge` or a gRPC client:
+
+```moonbit
+@mooncat.serve_h2c(app, host="127.0.0.1", port=8000)
+```
+
+The transport is [`moonrpc`](https://github.com/Lfan-ke/moonrpc)'s self-built HTTP/2 stack — the same RFC 7540 frame layer and RFC 7541 HPACK engine that carries real gRPC there. mooncat binds it to ASGI: it reads the client connection preface + SETTINGS, HPACK-decodes each request's HEADERS block into an `Http` `Scope` (the `:method` / `:path` / `:scheme` / `:authority` pseudo-headers plus the ordinary headers), streams request DATA to the app as the `Receive` body, and encodes the response — a HEADERS frame with the `:status` pseudo-header, then DATA — back over the connection. Requests multiplex on their own stream ids, and the response DATA is split to the peer's maximum frame size and clamped to the connection- and stream-level send windows, resuming on `WINDOW_UPDATE` (RFC 7540 §6.9).
+
+Proven end to end in CI by a **real HTTP/2 (h2c) client** built on `@socket.Tcp` and the same frame + HPACK codecs: it GETs a route and reads `200` + body, POSTs a body the app echoes, drives two multiplexed streams on one connection, and — with a deliberately small advertised window — checks the server clamps each DATA frame to the granted window. The same greet chain runs over h2c too: a real [`moonapi`](https://github.com/Lfan-ke/moonapi) app answers a genuine HTTP/2 GET, the router resolving the path decoded out of the HPACK block.
+
+`h2c` rather than `h2`-over-TLS because the `moonbitlang/async` TLS layer exposes no ALPN, so the protocol can't be negotiated on a TLS connection yet; h2c is the direct, ALPN-free path. HTTP/3 (QUIC) is a separate later self-build.
+
 ## Status
 
 `v0` — HTTP/1.1 request → ASGI `Scope`/`Receive`/`Send` → response is **working and verified by a real socket round-trip in CI** (a server task answers a live `@http.get`). Landed and CI-verified alongside it:
@@ -85,7 +99,7 @@ handle.shutdown()   // stop accepting → drain in-flight → lifespan shutdown 
 
 mooncat also **hosts a real [`moonapi`](https://github.com/Lfan-ke/moonapi) app end to end**: a CI integration test builds a `moonapi` `App` with a typed `/greet/:name` route, serves it through `serve`, and a real `@http` client `GET`s it and asserts the JSON body and `200` (and a `404` on a route miss). That's the server half of the suite's greet chain — the two repos cooperating over a live socket, not just compiling together.
 
-**HTTPS/TLS serving** and the **graceful-shutdown + `--reload` process model** landed too — see the sections above. Roadmap, transliterated from uvicorn feature-by-feature: subprotocol echo into the 101 response (awaits a transport hook), the self-built HTTP/1.1 parser knobs (`Expect: 100-continue`, buffer limits), further TLS detail (ciphers/mTLS), and multi-process prefork once the async layer exposes `SO_REUSEPORT` or fork.
+**HTTPS/TLS serving**, the **graceful-shutdown + `--reload` process model**, and **HTTP/2 (h2c) serving** landed too — see the sections above. Roadmap, transliterated from uvicorn feature-by-feature: subprotocol echo into the 101 response (awaits a transport hook), the self-built HTTP/1.1 parser knobs (`Expect: 100-continue`, buffer limits), further TLS detail (ciphers/mTLS), `h2` over TLS once the async layer exposes ALPN, and multi-process prefork once it exposes `SO_REUSEPORT` or fork.
 
 ## Native only
 

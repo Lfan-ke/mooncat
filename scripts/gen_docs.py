@@ -25,6 +25,12 @@ SECTIONS = [
      "Serving HTTP/1.1 over TLS (← uvicorn --ssl-certfile/--ssl-keyfile): a self-built "
      "HTTP/1.1 codec drives the moonasgi app over a @tls.Tls stream, with certificate "
      "material given as PEM (OpenSSL platforms) or PKCS#12 (Windows)."),
+    ("http2", "http2.mbt", "HTTP/2 (h2c)",
+     "Serving the same moonasgi app over HTTP/2 cleartext (h2c), reusing moonrpc's "
+     "self-built HTTP/2 frame layer and HPACK engine: it reads the client preface + "
+     "SETTINGS, decodes request HEADERS into a Scope, streams DATA as the receive "
+     "body, and encodes the response HEADERS + DATA back under connection- and "
+     "stream-level flow control."),
     ("process", "process_model.mbt", "Process model",
      "The uvicorn process model: a graceful shutdown that stops accepting, drains "
      "in-flight requests, runs lifespan shutdown, then closes the listener, plus a "
@@ -193,9 +199,11 @@ CONTRACT = """pub async fn serve(app : AsgiApp, host? : String, port? : Int, bac
 pub async fn serve_config(app : AsgiApp, config : Config) -> Unit
 pub async fn serve_tls(app : AsgiApp, certificate_file~, private_key_file~, pfx_file~, ...) -> Unit
 pub async fn serve_graceful(app : AsgiApp, config : Config, handle? : ShutdownHandle) -> Unit
+pub async fn serve_h2c(app : AsgiApp, host? : String, port? : Int) -> Unit
 
 // One socket -> Scope / Receive / Send -> your moonasgi app:
 //   HTTP/1.1 request  ->  Http scope     ->  HttpResponseStart + HttpResponseBody
+//   HTTP/2 (h2c)      ->  Http scope     ->  HEADERS + DATA, flow-controlled
 //   Upgrade: websocket ->  WebSocket scope -> connect/accept/receive/send/close
 //   process boundary  ->  Lifespan scope ->  startup ... shutdown
 //   handle.shutdown() ->  stop accepting -> drain -> lifespan shutdown -> close"""
@@ -232,7 +240,7 @@ def main():
             'drive your app — exactly the role uvicorn plays for Python.</p>'
             '<div class="badges">'
             '<a href="https://github.com/Lfan-ke/mooncat/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/Lfan-ke/mooncat/ci.yml?branch=master&label=CI&logo=github"></a>'
-            '<img alt="tests" src="https://img.shields.io/badge/tests-12%20passing%20(native)-0ca678">'
+            '<img alt="tests" src="https://img.shields.io/badge/tests-17%20passing%20(native)-0ca678">'
             '<a href="https://github.com/Lfan-ke/mooncat"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-source-24292f?logo=github"></a>'
             '<img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d5efc"></div>'
             '<div class="install"><span class="prompt">$</span><code>moon add Lfan-ke/mooncat</code>'

@@ -187,6 +187,48 @@ pub fn quic_loss_time_threshold(
 }
 
 ///|
+/// The send time (microseconds) of the outstanding packet numbered `pn`, or `None` if it is
+/// not currently outstanding.
+pub fn SentPacketTracker::time_of(
+  self : SentPacketTracker,
+  pn : Int64,
+) -> Int64? {
+  for p in self.outstanding {
+    if p.pn == pn {
+      return Some(p.time_sent)
+    }
+  }
+  None
+}
+
+///|
+/// Declare lost every outstanding packet meeting either the packet threshold (§6.1.1) or the
+/// time threshold (§6.1.2), returning the lost records — with their sizes, so the caller can
+/// take them out of the congestion window — and removing them from the outstanding set.
+pub fn SentPacketTracker::detect_lost_packets(
+  self : SentPacketTracker,
+  now : Int64,
+  packet_threshold : Int64,
+  time_threshold : Int64,
+) -> Array[SentPacket] {
+  let lost : Array[SentPacket] = []
+  let kept : Array[SentPacket] = []
+  for p in self.outstanding {
+    let by_packet = self.largest_acked >= 0L &&
+      self.largest_acked - p.pn >= packet_threshold
+    let by_time = self.largest_acked > p.pn &&
+      now - p.time_sent >= time_threshold
+    if by_packet || by_time {
+      lost.push(p)
+    } else {
+      kept.push(p)
+    }
+  }
+  self.outstanding = kept
+  lost
+}
+
+///|
 /// The packet numbers still outstanding (sent, not yet acknowledged or declared lost).
 pub fn SentPacketTracker::outstanding(self : SentPacketTracker) -> Array[Int64] {
   self.outstanding.map(p => p.pn)

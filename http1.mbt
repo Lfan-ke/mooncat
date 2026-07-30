@@ -281,6 +281,12 @@ async fn dispatch_http1(
   scheme~ : String,
   server_headers? : Map[String, String] = Map([]),
 ) -> Bool {
+  // A WebSocket upgrade is bridged over the raw stream (with subprotocol echo) and ends the
+  // connection — it never returns to the keep-alive HTTP loop.
+  if is_websocket_upgrade(req.headers) {
+    serve_websocket_raw(app, req, reader, writer)
+    return false
+  }
   let (path, query) = split_query(req.target)
   let scope = @moonasgi.Scope::Http({
     http_version: if req.version == "HTTP/1.0" {

@@ -225,6 +225,17 @@ fn ws_close_code(payload : Bytes) -> Int {
 }
 
 ///|
+/// Build a close frame's payload (RFC 6455 §5.5.1): the 16-bit status code big-endian followed by
+/// the UTF-8 reason.
+pub fn ws_close_payload(code : Int, reason : String) -> Bytes {
+  let buf = Buffer()
+  buf.write_byte((code >> 8).to_byte())
+  buf.write_byte(code.to_byte())
+  buf.write_bytes(@utf8.encode(reason))
+  buf.to_bytes()
+}
+
+///|
 /// The reason bytes of a close frame's payload — everything after the 2-byte status code.
 fn ws_close_reason(payload : Bytes) -> Bytes {
   if payload.length() > 2 {

@@ -39,6 +39,13 @@ pub fn QuicServerConn::transcript_hash(self : QuicServerConn) -> Bytes {
 }
 
 ///|
+/// The raw ClientHello the connection received (empty before one arrives): the source a
+/// server runs the ECDHE key_share from to derive its handshake secrets.
+pub fn QuicServerConn::client_hello(self : QuicServerConn) -> Bytes {
+  self.handshake.client_hello()
+}
+
+///|
 /// Whether an ACK is owed in the Initial space.
 pub fn QuicServerConn::initial_ack_pending(self : QuicServerConn) -> Bool {
   self.conn.space(QuicLevel::Initial).ack_pending()

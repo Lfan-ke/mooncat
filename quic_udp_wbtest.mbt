@@ -127,3 +127,201 @@ async test "quic over udp: client ClientHello and server ServerHello complete an
     server_ep.close()
   })
 }
+
+///|
+/// Every CRYPTO frame's bytes from a decoded packet's frames, in order.
+fn wire_crypto(frames : Array[QuicFrame]) -> Bytes {
+  let mut out = b""
+  for frame in frames {
+    match frame {
+      Crypto(data~, ..) => out = bytes_concat(out, data)
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
+/// Split a CRYPTO byte stream into its handshake messages as `(type, body, raw)`, where
+/// `raw` is the full message including its 4-byte header — the exact bytes the transcript
+/// folds.
+fn split_hs(crypto : Bytes) -> Array[(Int, Bytes, Bytes)] {
+  let out : Array[(Int, Bytes, Bytes)] = []
+  let view = crypto[:]
+  let mut off = 0
+  for ;; {
+    match tls_parse_handshake(view[off:]) {
+      Some((t, body)) => {
+        let consumed = 4 + body.length()
+        out.push((t, body, view[off:off + consumed].to_owned()))
+        off = off + consumed
+      }
+      None => break
+    }
+  }
+  out
+}
+
+///|
+async test "quic over udp: a full TLS 1.3 ECDHE handshake reaches CONNECTED over a real UDP socket" {
+  @async.with_task_group(g => {
+    let dcid = qv_hexb("8394c8f03e515708")
+    let client_priv = qv_hexb(
+      "2333333333333333333333333333333333333333333333333333333333333333",
+    )
+    let server_priv = qv_hexb(
+      "6666666666666666666666666666666666666666666666666666666666666666",
+    )
+    let client_pub = tls13_x25519_public(client_priv)
+    let server_pub = tls13_x25519_public(server_priv)
+    let initial_keys = client_initial_keys(dcid)
+    let server_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let server_addr = server_ep.local_addr()
+    let server_conn = QuicServerConn::new(dcid)
+    let connected : Ref[Bool] = { val: false }
+    // The server: receive the ClientHello, reply with a ServerHello then its Handshake flight
+    // (protected with keys it derives from the wire ClientHello), then verify the client
+    // Finished — every flight crossing a real UDP socket.
+    let _ = g.spawn(() => {
+      let (ch_dg, client_addr) = server_ep.recv_datagram()
+      let _ = server_conn.receive_initial(ch_dg) catch { _ => [] }
+      let sh = TlsServerHello::{
+        random: Bytes::make(32, b'\x66'),
+        session_id: b"lfanke",
+        cipher_suite: 0x1301,
+        extensions: [tls_key_share_extension(tls_group_x25519, server_pub)],
+      }
+      let sh_packet = server_conn.send_server_hello(
+        sh, b"", b"\x0a\x0b\x0c\x0d", 0,
+      )
+      server_ep.send_datagram(sh_packet, client_addr)
+      // Derive both handshake secrets from the ClientHello that arrived over the wire.
+      let th = server_conn.transcript_hash()
+      let (server_hs_secret, client_hs_secret) = match
+        tls13_ecdhe_secrets_from_client_hello(
+          server_conn.client_hello(),
+          server_priv,
+          th,
+        ) {
+        Some(v) => v
+        None => abort("server could not derive its handshake secrets")
+      }
+      let flight = server_conn.send_handshake_flight(
+        server_hs_secret, b"ee", b"cert", b"cv", b"", b"\x0a\x0b\x0c\x0d", 0,
+      ) catch {
+        _ => b""
+      }
+      server_ep.send_datagram(flight, client_addr)
+      let (fin_dg, _) = server_ep.recv_datagram()
+      connected.val = server_conn.receive_handshake(
+        fin_dg,
+        quic_packet_keys(client_hs_secret),
+        client_hs_secret,
+      ) catch {
+        _ => false
+      }
+    })
+    @async.sleep(100)
+    // The client: send its ClientHello, take the server key_share and Handshake flight off the
+    // wire, derive the same secrets, authenticate the server Finished, and send its own.
+    let client_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let ch = TlsClientHello::{
+      random: Bytes::make(32, b'\x23'),
+      session_id: b"lfanke",
+      cipher_suites: [0x1301],
+      extensions: [
+        {
+          ext_type: tls_ext_key_share,
+          data: tls_encode_key_share_client([(tls_group_x25519, client_pub)]),
+        },
+      ],
+    }
+    let ch_msg = encode_client_hello(ch)
+    client_ep.send_datagram(
+      quic_send_initial(
+        1U,
+        dcid,
+        b"",
+        b"",
+        0,
+        4,
+        [Crypto(offset=0, data=ch_msg)],
+        initial_keys,
+      ),
+      server_addr,
+    )
+    // ServerHello over the wire: the raw SH bytes for the transcript and the server key_share.
+    let (sh_dg, _) = client_ep.recv_datagram()
+    let sh_msg = match quic_recv_initial(sh_dg, initial_keys) {
+      Some((frames, _)) => wire_crypto(frames)
+      None => abort("client could not open the ServerHello Initial")
+    }
+    let server_hello = match tls_parse_handshake(sh_msg[:]) {
+      Some((2, body)) =>
+        match decode_server_hello(body[:]) {
+          Some(v) => v
+          None => abort("client could not decode the ServerHello")
+        }
+      _ => abort("ServerHello CRYPTO frame was not a ServerHello")
+    }
+    let server_pub_wire = match tls_server_hello_key_share(server_hello) {
+      Some(v) => v.1
+      None => abort("ServerHello carried no key_share")
+    }
+    let th = sha256(bytes_concat(ch_msg, sh_msg))
+    let server_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+      client_priv, server_pub_wire, th, false,
+    )
+    let client_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+      client_priv, server_pub_wire, th, true,
+    )
+    // The Handshake flight over the wire: decrypt with the derived server keys, split it, and
+    // reconstruct the transcript through the server Finished.
+    let (flight_dg, _) = client_ep.recv_datagram()
+    let msgs = match
+      quic_recv_handshake(flight_dg, quic_packet_keys(server_hs_secret)) {
+      Some((frames, _)) => split_hs(wire_crypto(frames))
+      None => abort("client could not decrypt the server Handshake flight")
+    }
+    assert_eq(msgs.length(), 4)
+    assert_eq(msgs[0].0, 8) // EncryptedExtensions
+    assert_eq(msgs[1].0, 11) // Certificate
+    assert_eq(msgs[2].0, 15) // CertificateVerify
+    assert_eq(msgs[3].0, 20) // Finished
+    let ee = msgs[0].2
+    let cert = msgs[1].2
+    let cv = msgs[2].2
+    let server_fin = msgs[3].2
+    let through_cv = bytes_concat(
+      bytes_concat(bytes_concat(bytes_concat(ch_msg, sh_msg), ee), cert),
+      cv,
+    )
+    // The client authenticates the server Finished before answering.
+    assert_eq(
+      tls13_finished_verify(server_hs_secret, sha256(through_cv), msgs[3].1),
+      true,
+    )
+    let through_server_fin = bytes_concat(through_cv, server_fin)
+    let client_fin = tls_encode_handshake(
+      20,
+      tls13_finished_verify_data(client_hs_secret, sha256(through_server_fin)),
+    )
+    client_ep.send_datagram(
+      quic_send_handshake(
+        1U,
+        b"",
+        b"",
+        0,
+        4,
+        [Crypto(offset=0, data=client_fin)],
+        quic_packet_keys(client_hs_secret),
+      ),
+      server_addr,
+    )
+    @async.sleep(200)
+    assert_eq(connected.val, true)
+    assert_eq(server_conn.handshake_state(), Connected)
+    client_ep.close()
+    server_ep.close()
+  })
+}

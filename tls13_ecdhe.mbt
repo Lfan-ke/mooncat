@@ -47,15 +47,9 @@ pub fn tls13_ecdhe_handshake_traffic_secret(
 }
 
 ///|
-/// The server's handshake traffic secret derived from a received ClientHello message alone:
-/// parse it, pull out the client's x25519 key_share, and run the ECDHE with the server's
-/// ephemeral `server_private` over the ClientHello..ServerHello `transcript_hash`. `None` if
-/// the message is not a ClientHello or offers no x25519 share.
-pub fn tls13_server_hs_secret_from_client_hello(
-  client_hello : Bytes,
-  server_private : Bytes,
-  transcript_hash : Bytes,
-) -> Bytes? {
+/// The client's offered x25519 public key from a ClientHello message: parse it and pull the
+/// x25519 key_share. `None` if the message is not a ClientHello or offers no x25519 share.
+fn tls13_client_hello_x25519(client_hello : Bytes) -> Bytes? {
   let (msg_type, body) = match tls_parse_handshake(client_hello[:]) {
     Some(v) => v
     None => return None
@@ -73,11 +67,53 @@ pub fn tls13_server_hs_secret_from_client_hello(
       client_public = Some(share.1)
     }
   }
-  match client_public {
+  client_public
+}
+
+///|
+/// The server's handshake traffic secret derived from a received ClientHello message alone:
+/// pull the client's x25519 key_share and run the ECDHE with the server's ephemeral
+/// `server_private` over the ClientHello..ServerHello `transcript_hash`. `None` if the
+/// message is not a ClientHello or offers no x25519 share.
+pub fn tls13_server_hs_secret_from_client_hello(
+  client_hello : Bytes,
+  server_private : Bytes,
+  transcript_hash : Bytes,
+) -> Bytes? {
+  match tls13_client_hello_x25519(client_hello) {
     Some(pub_key) =>
       Some(
         tls13_ecdhe_handshake_traffic_secret(
           server_private, pub_key, transcript_hash, false,
+        ),
+      )
+    None => None
+  }
+}
+
+///|
+/// Both handshake traffic secrets a server derives from a received ClientHello and its own
+/// ephemeral private key (RFC 8446 §7.1), as `(server_secret, client_secret)`: pull the
+/// client's x25519 key_share, run the ECDHE with `server_private` over the ClientHello..
+/// ServerHello `transcript_hash`, and derive each side's secret. `None` if the message is
+/// not a ClientHello or offers no x25519 share. A server protects its own flight with the
+/// server secret and verifies the client Finished with the client secret — deriving both
+/// from the wire ClientHello, never from the peer's copy.
+pub fn tls13_ecdhe_secrets_from_client_hello(
+  client_hello : Bytes,
+  server_private : Bytes,
+  transcript_hash : Bytes,
+) -> (Bytes, Bytes)? {
+  match tls13_client_hello_x25519(client_hello) {
+    Some(pub_key) =>
+      Some(
+        (
+          tls13_ecdhe_handshake_traffic_secret(
+            server_private, pub_key, transcript_hash, false,
+          ),
+          tls13_ecdhe_handshake_traffic_secret(
+            server_private, pub_key, transcript_hash, true,
+          ),
         ),
       )
     None => None

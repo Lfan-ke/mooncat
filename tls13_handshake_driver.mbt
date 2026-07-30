@@ -13,12 +13,18 @@ pub struct TlsServerHandshake {
   mut state : TlsServerState
   transcript : TranscriptHash
   mut buffer : Bytes
+  mut client_hello : Bytes
 }
 
 ///|
 /// A fresh handshake, awaiting the ClientHello.
 pub fn TlsServerHandshake::new() -> TlsServerHandshake {
-  { state: Start, transcript: TranscriptHash::new(), buffer: b"" }
+  {
+    state: Start,
+    transcript: TranscriptHash::new(),
+    buffer: b"",
+    client_hello: b"",
+  }
 }
 
 ///|
@@ -40,6 +46,14 @@ pub fn TlsServerHandshake::is_connected(self : TlsServerHandshake) -> Bool {
 }
 
 ///|
+/// The raw ClientHello message the handshake received (empty until one arrives). A server
+/// needs it to pull the client's key_share and run the ECDHE that derives the handshake
+/// secrets.
+pub fn TlsServerHandshake::client_hello(self : TlsServerHandshake) -> Bytes {
+  self.client_hello
+}
+
+///|
 /// Feed received CRYPTO bytes: process every complete handshake message now available —
 /// add it to the transcript and drive the state machine — buffering any trailing partial
 /// message. Returns the handshake types processed, in order.
@@ -55,7 +69,11 @@ pub fn TlsServerHandshake::feed(
     match tls_parse_handshake(view[off:]) {
       Some((msg_type, body)) => {
         let consumed = 4 + body.length()
-        self.transcript.add(view[off:off + consumed].to_owned())
+        let message = view[off:off + consumed].to_owned()
+        if msg_type == tls_client_hello {
+          self.client_hello = message
+        }
+        self.transcript.add(message)
         self.state = tls_server_recv(self.state, msg_type)
         processed.push(msg_type)
         off = off + consumed

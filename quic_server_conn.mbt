@@ -45,22 +45,21 @@ pub fn QuicServerConn::initial_ack_pending(self : QuicServerConn) -> Bool {
 }
 
 ///|
-/// Build the server's ServerHello response: encode it, fold it into the transcript,
-/// advance the state past the server flight (a full handshake, no client certificate
-/// requested), and protect it into an Initial packet addressed to `out_dcid` (the
-/// client's source connection id) from `out_scid`, at Initial packet number `pn`
-/// (RFC 9001 §5.3). The Handshake-space messages follow separately once the handshake
-/// keys are in use.
+/// Build the server's ServerHello response: encode it, fold it into the transcript, and
+/// protect it into an Initial packet addressed to `out_dcid` (the client's source
+/// connection id) from `out_scid`, at Initial packet number `pn` (RFC 9001 §5.3). The
+/// state stays at RECVD_CH — the server flight is not complete until the Handshake-space
+/// messages (EncryptedExtensions, Certificate, CertificateVerify, Finished) are sent by
+/// `send_handshake_flight`, which advances it to WAIT_FINISHED.
 pub fn QuicServerConn::send_server_hello(
   self : QuicServerConn,
   server_hello : TlsServerHello,
   out_dcid : Bytes,
   out_scid : Bytes,
   pn : Int64,
-) -> Bytes raise {
+) -> Bytes {
   let sh_msg = encode_server_hello(server_hello)
   self.handshake.record_sent(sh_msg)
-  self.handshake.sent_flight(false)
   quic_send_initial(
     1U,
     out_dcid,
@@ -70,6 +69,51 @@ pub fn QuicServerConn::send_server_hello(
     4,
     [Crypto(offset=0, data=sh_msg)],
     self.initial_keys,
+  )
+}
+
+///|
+/// Send the server's Handshake-space flight (RFC 8446 §4, RFC 9001 §5): encode
+/// EncryptedExtensions, Certificate, and CertificateVerify, fold them into the transcript
+/// in order, compute the server Finished as `HMAC(finished_key, transcript hash through
+/// CertificateVerify)` over `server_hs_secret`, fold the Finished too, and advance the
+/// state past the whole flight (RECVD_CH → WAIT_FINISHED). The four messages form one
+/// contiguous CRYPTO stream, protected into a Handshake packet with the handshake-space
+/// keys `quic_packet_keys(server_hs_secret)`, addressed to `out_dcid` from `out_scid` at
+/// Handshake packet number `pn`. `server_hs_secret` is the server handshake traffic secret
+/// the key schedule derives once ECDHE completes.
+pub fn QuicServerConn::send_handshake_flight(
+  self : QuicServerConn,
+  server_hs_secret : Bytes,
+  encrypted_extensions : Bytes,
+  certificate : Bytes,
+  certificate_verify : Bytes,
+  out_dcid : Bytes,
+  out_scid : Bytes,
+  pn : Int64,
+) -> Bytes raise {
+  let ee = tls_encode_handshake(8, encrypted_extensions)
+  let cert = tls_encode_handshake(11, certificate)
+  let cv = tls_encode_handshake(15, certificate_verify)
+  self.handshake.record_sent(ee)
+  self.handshake.record_sent(cert)
+  self.handshake.record_sent(cv)
+  let verify_data = tls13_finished_verify_data(
+    server_hs_secret,
+    self.handshake.transcript_hash(),
+  )
+  let fin = tls_encode_handshake(20, verify_data)
+  self.handshake.record_sent(fin)
+  self.handshake.sent_flight(false)
+  let crypto = bytes_concat(bytes_concat(bytes_concat(ee, cert), cv), fin)
+  quic_send_handshake(
+    1U,
+    out_dcid,
+    out_scid,
+    pn,
+    4,
+    [Crypto(offset=0, data=crypto)],
+    quic_packet_keys(server_hs_secret),
   )
 }
 

@@ -92,7 +92,9 @@ test "server conn: send_server_hello produces a ServerHello the client can decod
     extensions: [],
   }
   let sh_packet = server.send_server_hello(sh, b"", b"\x01\x02\x03\x04", 0)
-  assert_eq(server.handshake_state(), WaitFinished)
+  // ServerHello alone does not complete the flight; the state stays at RECVD_CH until the
+  // Handshake-space messages are sent.
+  assert_eq(server.handshake_state(), RecvdClientHello)
   // The client (sharing the Initial keys) receives it and decodes the ServerHello.
   let decoded = match quic_recv_initial(sh_packet, keys) {
     Some((frames, _)) => {
@@ -115,6 +117,90 @@ test "server conn: send_server_hello produces a ServerHello the client can decod
     Some(d) => assert_eq(d, sh)
     None => abort("expected a ServerHello CRYPTO frame")
   }
+}
+
+///|
+test "server conn: send_handshake_flight emits EE/Cert/CertVerify/Finished the client authenticates" {
+  let dcid = qv_hexb("8394c8f03e515708")
+  let initial_keys = client_initial_keys(dcid)
+  let server = QuicServerConn::new(dcid)
+  // Client sends its ClientHello; the server receives it, then sends its ServerHello.
+  let ch = tls_encode_handshake(1, b"ch")
+  let ch_packet = quic_send_initial(
+    1U,
+    dcid,
+    b"",
+    b"",
+    0,
+    4,
+    [Crypto(offset=0, data=ch)],
+    initial_keys,
+  )
+  let _ = server.receive_initial(ch_packet)
+  let sh = TlsServerHello::{
+    random: Bytes::make(32, b'\xcd'),
+    session_id: b"",
+    cipher_suite: 0x1301,
+    extensions: [],
+  }
+  let _ = server.send_server_hello(sh, b"", b"\x0a\x0b\x0c\x0d", 0)
+  let sh_msg = encode_server_hello(sh)
+  // The server sends its Handshake-space flight (a real 32-byte server handshake secret).
+  let secret = qv_hexb(
+    "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38",
+  )
+  let ee_body = b"encrypted-extensions"
+  let cert_body = b"the-server-certificate"
+  let cv_body = b"the-certificate-verify-signature"
+  let hs_packet = server.send_handshake_flight(
+    secret, ee_body, cert_body, cv_body, b"", b"\x0a\x0b\x0c\x0d", 0,
+  )
+  // With the whole flight sent, the server now waits for the client's Finished.
+  assert_eq(server.handshake_state(), WaitFinished)
+  // The client opens the Handshake packet with the same handshake-space keys and splits the
+  // CRYPTO stream back into the four handshake messages.
+  let hs_keys = quic_packet_keys(secret)
+  let msgs = match quic_recv_handshake(hs_packet, hs_keys) {
+    Some((frames, _)) => {
+      let mut crypto = b""
+      for frame in frames {
+        match frame {
+          Crypto(data~, ..) => crypto = bytes_concat(crypto, data)
+          _ => ()
+        }
+      }
+      let out : Array[(Int, Bytes)] = []
+      let view = crypto[:]
+      let mut off = 0
+      for ;; {
+        match tls_parse_handshake(view[off:]) {
+          Some((t, body)) => {
+            out.push((t, body))
+            off = off + 4 + body.length()
+          }
+          None => break
+        }
+      }
+      out
+    }
+    None => abort("Handshake flight failed to authenticate")
+  }
+  // The four handshake messages, in order.
+  assert_eq(msgs.length(), 4)
+  assert_eq(msgs[0].0, 8) // EncryptedExtensions
+  assert_eq(msgs[1].0, 11) // Certificate
+  assert_eq(msgs[2].0, 15) // CertificateVerify
+  assert_eq(msgs[3].0, 20) // Finished
+  // The Finished verify_data is the MAC over the transcript CH..SH..EE..Cert..CertVerify.
+  let ee = tls_encode_handshake(8, ee_body)
+  let cert = tls_encode_handshake(11, cert_body)
+  let cv = tls_encode_handshake(15, cv_body)
+  let transcript = bytes_concat(
+    bytes_concat(bytes_concat(bytes_concat(ch, sh_msg), ee), cert),
+    cv,
+  )
+  let expected = tls13_finished_verify_data(secret, sha256(transcript))
+  assert_eq(msgs[3].1, expected)
 }
 
 ///|

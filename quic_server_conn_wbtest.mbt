@@ -67,6 +67,57 @@ test "server conn: a ClientHello split across two Initial packets reassembles" {
 }
 
 ///|
+test "server conn: send_server_hello produces a ServerHello the client can decode" {
+  let dcid = qv_hexb("8394c8f03e515708")
+  let keys = client_initial_keys(dcid)
+  // The client sends its ClientHello; the server receives it.
+  let ch_packet = quic_send_initial(
+    1U,
+    dcid,
+    b"",
+    b"",
+    0,
+    4,
+    [Crypto(offset=0, data=tls_encode_handshake(1, b"ch"))],
+    keys,
+  )
+  let server = QuicServerConn::new(dcid)
+  let _ = server.receive_initial(ch_packet)
+  assert_eq(server.handshake_state(), RecvdClientHello)
+  // The server builds and protects its ServerHello.
+  let sh = TlsServerHello::{
+    random: Bytes::make(32, b'\xab'),
+    session_id: b"",
+    cipher_suite: 0x1301,
+    extensions: [],
+  }
+  let sh_packet = server.send_server_hello(sh, b"", b"\x01\x02\x03\x04", 0)
+  assert_eq(server.handshake_state(), WaitFinished)
+  // The client (sharing the Initial keys) receives it and decodes the ServerHello.
+  let decoded = match quic_recv_initial(sh_packet, keys) {
+    Some((frames, _)) => {
+      let mut result : TlsServerHello? = None
+      for frame in frames {
+        match frame {
+          Crypto(data~, ..) =>
+            match tls_parse_handshake(data[:]) {
+              Some((2, body)) => result = decode_server_hello(body[:])
+              _ => ()
+            }
+          _ => ()
+        }
+      }
+      result
+    }
+    None => abort("ServerHello Initial packet failed to authenticate")
+  }
+  match decoded {
+    Some(d) => assert_eq(d, sh)
+    None => abort("expected a ServerHello CRYPTO frame")
+  }
+}
+
+///|
 test "server conn: a tampered Initial packet is rejected" {
   let dcid = qv_hexb("8394c8f03e515708")
   let keys = client_initial_keys(dcid)

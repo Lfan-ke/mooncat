@@ -45,6 +45,35 @@ pub fn QuicServerConn::initial_ack_pending(self : QuicServerConn) -> Bool {
 }
 
 ///|
+/// Build the server's ServerHello response: encode it, fold it into the transcript,
+/// advance the state past the server flight (a full handshake, no client certificate
+/// requested), and protect it into an Initial packet addressed to `out_dcid` (the
+/// client's source connection id) from `out_scid`, at Initial packet number `pn`
+/// (RFC 9001 §5.3). The Handshake-space messages follow separately once the handshake
+/// keys are in use.
+pub fn QuicServerConn::send_server_hello(
+  self : QuicServerConn,
+  server_hello : TlsServerHello,
+  out_dcid : Bytes,
+  out_scid : Bytes,
+  pn : Int64,
+) -> Bytes raise {
+  let sh_msg = encode_server_hello(server_hello)
+  self.handshake.record_sent(sh_msg)
+  self.handshake.sent_flight(false)
+  quic_send_initial(
+    1U,
+    out_dcid,
+    out_scid,
+    b"",
+    pn,
+    4,
+    [Crypto(offset=0, data=sh_msg)],
+    self.initial_keys,
+  )
+}
+
+///|
 /// Receive a client Initial packet: unprotect it, record its number for acknowledgement,
 /// reassemble its CRYPTO frames, and drive the handshake with the contiguous handshake
 /// bytes. Returns the handshake message types processed. Raises if the packet fails to

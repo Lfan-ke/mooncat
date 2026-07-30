@@ -132,6 +132,18 @@ pub fn der_null() -> Bytes {
 }
 
 ///|
+/// A DER UTF8String (tag 0x0c).
+pub fn der_utf8_string(s : String) -> Bytes {
+  der_tlv(0x0c, @utf8.encode(s))
+}
+
+///|
+/// A DER UTCTime (tag 0x17), the `YYMMDDHHMMSSZ` form X.509 validity uses before 2050.
+pub fn der_utc_time(s : String) -> Bytes {
+  der_tlv(0x17, @utf8.encode(s))
+}
+
+///|
 /// A context-specific constructed value `[tag_num]` wrapping `content` (tag `0xA0 | tag_num`) —
 /// the EXPLICIT tagging X.509 uses for the certificate version and extensions.
 pub fn der_explicit(tag_num : Int, content : Bytes) -> Bytes {

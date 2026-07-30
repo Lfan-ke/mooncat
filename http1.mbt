@@ -250,6 +250,7 @@ async fn dispatch_http1(
   reader : &@io.Reader,
   writer : &@io.Writer,
   scheme~ : String,
+  server_headers? : Map[String, String] = Map([]),
 ) -> Bool {
   let (path, query) = split_query(req.target)
   let scope = @moonasgi.Scope::Http({
@@ -306,10 +307,23 @@ async fn dispatch_http1(
     sb.write_string(
       "\{resp_version} \{resp_status.val} \{reason(resp_status.val)}\r\n",
     )
+    let app_keys : Map[String, Bool] = Map([])
     for pair in resp_headers.val {
       let kl = pair.0.to_lower()
+      app_keys[kl] = true
       if kl != "content-length" && kl != "transfer-encoding" {
         sb.write_string("\{pair.0}: \{pair.1}\r\n")
+      }
+    }
+    // Configured server headers (e.g. `Server`) as defaults, unless the app already
+    // set the same key — matching what the async HTTP server injects on the plaintext
+    // path, so HTTPS responses carry them too.
+    for name, value in server_headers {
+      let kl = name.to_lower()
+      if !app_keys.contains(kl) &&
+        kl != "content-length" &&
+        kl != "transfer-encoding" {
+        sb.write_string("\{name}: \{value}\r\n")
       }
     }
     sb.write_string(extra)
@@ -418,6 +432,27 @@ async fn drain_pipe(r : @pipe.PipeRead) -> Bytes {
 }
 
 ///|
+/// Whether `needle` occurs anywhere in `hay` (test helper for response inspection).
+fn bytes_has(hay : Bytes, needle : Bytes) -> Bool {
+  let n = needle.length()
+  if n == 0 {
+    return true
+  }
+  let mut i = 0
+  while i + n <= hay.length() {
+    let mut j = 0
+    while j < n && hay[i + j] == needle[j] {
+      j = j + 1
+    }
+    if j == n {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+///|
 /// A fixed Http1Request head for driving `dispatch_http1` in tests.
 fn h1_req(version : String) -> Http1Request {
   {
@@ -483,6 +518,57 @@ async test "http1: a streamed HTTP/1.0 response is close-delimited, not chunked"
   assert_eq(resp[n - 5:n].to_owned() == b"part2", true)
   // Close-delimited framing forces the connection closed.
   assert_eq(keep, false)
+}
+
+///|
+async test "http1: configured server headers ride the response, unless the app sets them" {
+  // Default: the configured `server` header is written.
+  let (req_r, req_w) = @pipe.pipe()
+  req_w.close()
+  let (resp_r, resp_w) = @pipe.pipe()
+  let plain : @moonasgi.AsgiApp = (_scope, _receive, send) => {
+    send(
+      @moonasgi.Event::HttpResponseStart(status=200, headers=[], trailers=false),
+    )
+    send(@moonasgi.Event::HttpResponseBody(body=b"hi", more_body=false))
+  }
+  let _ = dispatch_http1(
+    plain,
+    h1_req("HTTP/1.1"),
+    req_r,
+    resp_w,
+    scheme="http",
+    server_headers=Map([("server", "mooncat")]),
+  )
+  resp_w.close()
+  assert_eq(bytes_has(drain_pipe(resp_r), b"server: mooncat"), true)
+
+  // Override: an app that sets `server` itself wins over the configured default.
+  let (req_r2, req_w2) = @pipe.pipe()
+  req_w2.close()
+  let (resp_r2, resp_w2) = @pipe.pipe()
+  let overrides : @moonasgi.AsgiApp = (_scope, _receive, send) => {
+    send(
+      @moonasgi.Event::HttpResponseStart(
+        status=200,
+        headers=[("server", "myapp")],
+        trailers=false,
+      ),
+    )
+    send(@moonasgi.Event::HttpResponseBody(body=b"hi", more_body=false))
+  }
+  let _ = dispatch_http1(
+    overrides,
+    h1_req("HTTP/1.1"),
+    req_r2,
+    resp_w2,
+    scheme="http",
+    server_headers=Map([("server", "mooncat")]),
+  )
+  resp_w2.close()
+  let resp2 = drain_pipe(resp_r2)
+  assert_eq(bytes_has(resp2, b"server: myapp"), true)
+  assert_eq(bytes_has(resp2, b"server: mooncat"), false)
 }
 
 ///|

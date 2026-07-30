@@ -1,15 +1,24 @@
-// QUIC loss detection by packet threshold (RFC 9002 §6.1.1). An endpoint keeps the ack-
-// eliciting packets it has sent but not yet had acknowledged; when an ACK arrives it drops the
-// acknowledged ones and advances the largest acknowledged packet number, then declares lost
-// every still-outstanding packet sent at least kPacketThreshold (3) packets before that
-// largest — those are assumed dropped rather than merely reordered, and their frames are
-// retransmitted. Time-threshold loss (§6.1.2) layers on top of this with the RTT estimate.
+// QUIC loss detection (RFC 9002 §6.1). An endpoint keeps a record of each ack-eliciting packet
+// it has sent but not yet had acknowledged — its number, the time it was sent, and the bytes it
+// put in flight. When an ACK arrives it drops the acknowledged records and advances the largest
+// acknowledged number, then declares lost every still-outstanding packet that is either at
+// least kPacketThreshold (3) packets before that largest (§6.1.1) or was sent longer than a
+// time threshold ago (§6.1.2, derived from the RTT). Lost packets' frames are retransmitted.
+
+///|
+/// A sent, not-yet-acknowledged ack-eliciting packet (RFC 9002 §A.1): its number, the send
+/// time in microseconds, and the bytes it counts toward the congestion window.
+pub(all) struct SentPacket {
+  pn : Int64
+  time_sent : Int64
+  size : Int64
+}
 
 ///|
 /// The outstanding ack-eliciting packets in one packet-number space and the largest packet
 /// number acknowledged so far (-1 before any ACK).
 pub struct SentPacketTracker {
-  mut outstanding : Array[Int64]
+  mut outstanding : Array[SentPacket]
   mut largest_acked : Int64
 }
 
@@ -30,25 +39,31 @@ fn loss_contains(arr : Array[Int64], x : Int64) -> Bool {
 }
 
 ///|
-/// Record that an ack-eliciting packet numbered `pn` was sent.
-pub fn SentPacketTracker::on_sent(self : SentPacketTracker, pn : Int64) -> Unit {
-  self.outstanding.push(pn)
+/// Record that an ack-eliciting packet numbered `pn` was sent at `time_sent` (microseconds)
+/// carrying `size` bytes in flight.
+pub fn SentPacketTracker::on_sent(
+  self : SentPacketTracker,
+  pn : Int64,
+  time_sent : Int64,
+  size : Int64,
+) -> Unit {
+  self.outstanding.push({ pn, time_sent, size })
 }
 
 ///|
 /// Process an ACK acknowledging the packet numbers `acked`: drop them from the outstanding set
-/// and advance `largest_acked`. Returns how many outstanding packets this newly acknowledged.
+/// and advance `largest_acked`. Returns the bytes newly taken out of flight.
 pub fn SentPacketTracker::on_ack(
   self : SentPacketTracker,
   acked : Array[Int64],
-) -> Int {
-  let remaining : Array[Int64] = []
-  let mut newly = 0
-  for pn in self.outstanding {
-    if loss_contains(acked, pn) {
-      newly = newly + 1
+) -> Int64 {
+  let remaining : Array[SentPacket] = []
+  let mut acked_bytes = 0L
+  for p in self.outstanding {
+    if loss_contains(acked, p.pn) {
+      acked_bytes = acked_bytes + p.size
     } else {
-      remaining.push(pn)
+      remaining.push(p)
     }
   }
   self.outstanding = remaining
@@ -57,7 +72,7 @@ pub fn SentPacketTracker::on_ack(
       self.largest_acked = pn
     }
   }
-  newly
+  acked_bytes
 }
 
 ///|
@@ -76,26 +91,26 @@ pub fn quic_ack_frame_ranges(frame : QuicFrame) -> Array[(Int64, Int64)] raise {
 
 ///|
 /// Process an ACK whose acknowledged packets are the ascending inclusive `ranges`: drop every
-/// outstanding packet that falls in a range and advance `largest_acked`. Returns how many
-/// outstanding packets this newly acknowledged — the range-based path a real ACK frame drives.
+/// outstanding packet that falls in a range and advance `largest_acked`. Returns the bytes
+/// newly taken out of flight — the range-based path a real ACK frame drives.
 pub fn SentPacketTracker::on_ack_ranges(
   self : SentPacketTracker,
   ranges : Array[(Int64, Int64)],
-) -> Int {
-  let remaining : Array[Int64] = []
-  let mut newly = 0
-  for pn in self.outstanding {
+) -> Int64 {
+  let remaining : Array[SentPacket] = []
+  let mut acked_bytes = 0L
+  for p in self.outstanding {
     let mut acked = false
     for r in ranges {
-      if pn >= r.0 && pn <= r.1 {
+      if p.pn >= r.0 && p.pn <= r.1 {
         acked = true
         break
       }
     }
     if acked {
-      newly = newly + 1
+      acked_bytes = acked_bytes + p.size
     } else {
-      remaining.push(pn)
+      remaining.push(p)
     }
   }
   self.outstanding = remaining
@@ -104,25 +119,25 @@ pub fn SentPacketTracker::on_ack_ranges(
       self.largest_acked = r.1
     }
   }
-  newly
+  acked_bytes
 }
 
 ///|
 /// Declare lost every outstanding packet sent at least `threshold` packets before the largest
 /// acknowledged (RFC 9002 §6.1.1, kPacketThreshold = 3): a packet `pn` is lost when
-/// `largest_acked - pn >= threshold`. Returns the lost packet numbers and stops tracking them
-/// (their frames are to be retransmitted). Nothing is lost before the first ACK.
+/// `largest_acked - pn >= threshold`. Returns the lost packet numbers and stops tracking them.
+/// Nothing is lost before the first ACK.
 pub fn SentPacketTracker::detect_lost(
   self : SentPacketTracker,
   threshold : Int64,
 ) -> Array[Int64] {
   let lost : Array[Int64] = []
-  let kept : Array[Int64] = []
-  for pn in self.outstanding {
-    if self.largest_acked >= 0L && self.largest_acked - pn >= threshold {
-      lost.push(pn)
+  let kept : Array[SentPacket] = []
+  for p in self.outstanding {
+    if self.largest_acked >= 0L && self.largest_acked - p.pn >= threshold {
+      lost.push(p.pn)
     } else {
-      kept.push(pn)
+      kept.push(p)
     }
   }
   self.outstanding = kept
@@ -130,9 +145,51 @@ pub fn SentPacketTracker::detect_lost(
 }
 
 ///|
+/// Declare lost every outstanding packet sent before the largest acknowledged and older than
+/// `time_threshold` microseconds at `now` (RFC 9002 §6.1.2): lost when `largest_acked > pn` and
+/// `now - time_sent >= time_threshold`. Returns the lost packet numbers and stops tracking them.
+pub fn SentPacketTracker::detect_lost_time(
+  self : SentPacketTracker,
+  now : Int64,
+  time_threshold : Int64,
+) -> Array[Int64] {
+  let lost : Array[Int64] = []
+  let kept : Array[SentPacket] = []
+  for p in self.outstanding {
+    if self.largest_acked > p.pn && now - p.time_sent >= time_threshold {
+      lost.push(p.pn)
+    } else {
+      kept.push(p)
+    }
+  }
+  self.outstanding = kept
+  lost
+}
+
+///|
+/// The loss time threshold (RFC 9002 §6.1.2): `max(kTimeThreshold · max(smoothed_rtt,
+/// latest_rtt), granularity)` with kTimeThreshold = 9/8, in microseconds.
+pub fn quic_loss_time_threshold(
+  rtt : RttEstimator,
+  granularity : Int64,
+) -> Int64 {
+  let m = if rtt.smoothed() > rtt.latest() {
+    rtt.smoothed()
+  } else {
+    rtt.latest()
+  }
+  let scaled = 9L * m / 8L
+  if scaled > granularity {
+    scaled
+  } else {
+    granularity
+  }
+}
+
+///|
 /// The packet numbers still outstanding (sent, not yet acknowledged or declared lost).
 pub fn SentPacketTracker::outstanding(self : SentPacketTracker) -> Array[Int64] {
-  self.outstanding
+  self.outstanding.map(p => p.pn)
 }
 
 ///|

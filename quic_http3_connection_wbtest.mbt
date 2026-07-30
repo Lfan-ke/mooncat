@@ -1,0 +1,239 @@
+// One HTTP/3 connection end to end over a single UDP socket (RFC 9001, RFC 9114): the client and
+// server complete the TLS 1.3 / QUIC handshake to Connected, each derives its 1-RTT application
+// keys from that handshake (master secret + the ClientHello..server-Finished transcript), and
+// then the client sends an HTTP/3 request the server routes through http3_serve — the handshake
+// and the request/response on the same connection, the shape a real HTTP/3 exchange takes.
+
+///|
+async test "quic http3 connection: handshake then serve a request on one connection over the wire" {
+  @async.with_task_group(g => {
+    let dcid = qv_hexb("8394c8f03e515708")
+    let client_priv = qv_hexb(
+      "2333333333333333333333333333333333333333333333333333333333333333",
+    )
+    let server_priv = qv_hexb(
+      "6666666666666666666666666666666666666666666666666666666666666666",
+    )
+    let client_pub = tls13_x25519_public(client_priv)
+    let server_pub = tls13_x25519_public(server_priv)
+    let initial_keys = client_initial_keys(dcid)
+    let server_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let server_addr = server_ep.local_addr()
+    let server_conn = QuicServerConn::new(dcid)
+    let client_cid = qv_hexb("66778899eeff0011")
+    let connected : Ref[Bool] = { val: false }
+    let handler = fn(r : Http3Request) -> Http3Response {
+      if r.path == "/hello" {
+        Http3Response::{ status: "200", headers: [], body: b"one connection" }
+      } else {
+        Http3Response::{ status: "404", headers: [], body: b"" }
+      }
+    }
+    // Server: run the handshake to Connected, derive the 1-RTT keys, then serve one request.
+    let _ = g.spawn(() => {
+      let (ch_dg, client_addr) = server_ep.recv_datagram()
+      let _ = server_conn.receive_initial(ch_dg) catch { _ => [] }
+      let sh = TlsServerHello::{
+        random: Bytes::make(32, b'\x66'),
+        session_id: b"lfanke",
+        cipher_suite: 0x1301,
+        extensions: [tls_key_share_extension(tls_group_x25519, server_pub)],
+      }
+      server_ep.send_datagram(
+        server_conn.send_server_hello(sh, b"", b"\x0a\x0b\x0c\x0d", 0),
+        client_addr,
+      )
+      let th_ch_sh = server_conn.transcript_hash()
+      let server_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+        server_priv, client_pub, th_ch_sh, false,
+      )
+      let flight = server_conn.send_handshake_flight(
+        server_hs_secret, b"ee", b"cert", b"cv", b"", b"\x0a\x0b\x0c\x0d", 0,
+      ) catch {
+        _ => b""
+      }
+      server_ep.send_datagram(flight, client_addr)
+      let th_app = server_conn.transcript_hash()
+      let client_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+        server_priv, client_pub, th_ch_sh, true,
+      )
+      let (fin_dg, _) = server_ep.recv_datagram()
+      connected.val = server_conn.receive_handshake(
+        fin_dg,
+        quic_packet_keys(client_hs_secret),
+        client_hs_secret,
+      ) catch {
+        _ => false
+      }
+      // 1-RTT keys from the handshake: master secret over the CH..server-Finished transcript.
+      let master = tls13_master_secret(
+        tls13_handshake_secret_from_ecdhe(server_priv, client_pub),
+      )
+      let client_app_keys = quic_application_keys(master, th_app, true)
+      let server_app_keys = quic_application_keys(master, th_app, false)
+      let (req_dg, from2) = server_ep.recv_datagram()
+      let frames = match
+        (quic_recv_short(req_dg, dcid.length(), client_app_keys) catch {
+          _ => None
+        }) {
+        Some((fr, _)) => fr
+        None => []
+      }
+      let mut req = b""
+      for frame in frames {
+        match frame {
+          Stream(id~, data~, ..) => if id == 0UL { req = data }
+          _ => ()
+        }
+      }
+      let resp = http3_serve(req, handler) catch { _ => b"" }
+      server_ep.send_datagram(
+        quic_send_short(
+          false,
+          false,
+          client_cid,
+          0,
+          4,
+          [Stream(id=0UL, offset=0UL, fin=true, data=resp)],
+          server_app_keys,
+        ),
+        from2,
+      )
+    })
+    @async.sleep(100)
+    // Client: drive the handshake, derive the 1-RTT keys, then send the request and read the reply.
+    let client_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let ch = TlsClientHello::{
+      random: Bytes::make(32, b'\x23'),
+      session_id: b"lfanke",
+      cipher_suites: [0x1301],
+      extensions: [
+        {
+          ext_type: tls_ext_key_share,
+          data: tls_encode_key_share_client([(tls_group_x25519, client_pub)]),
+        },
+      ],
+    }
+    let ch_msg = encode_client_hello(ch)
+    client_ep.send_datagram(
+      quic_send_initial(
+        1U,
+        dcid,
+        b"",
+        b"",
+        0,
+        4,
+        [Crypto(offset=0, data=ch_msg)],
+        initial_keys,
+      ),
+      server_addr,
+    )
+    let (sh_dg, _) = client_ep.recv_datagram()
+    let sh_msg = match quic_recv_initial(sh_dg, initial_keys) {
+      Some((frames, _)) => wire_crypto(frames)
+      None => abort("client could not open the ServerHello")
+    }
+    let server_hello = match tls_parse_handshake(sh_msg[:]) {
+      Some((2, body)) =>
+        match decode_server_hello(body[:]) {
+          Some(v) => v
+          None => abort("client could not decode the ServerHello")
+        }
+      _ => abort("ServerHello frame was not a ServerHello")
+    }
+    let server_pub_wire = match tls_server_hello_key_share(server_hello) {
+      Some(v) => v.1
+      None => abort("ServerHello carried no key_share")
+    }
+    let th_ch_sh = sha256(bytes_concat(ch_msg, sh_msg))
+    let server_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+      client_priv, server_pub_wire, th_ch_sh, false,
+    )
+    let (flight_dg, _) = client_ep.recv_datagram()
+    let msgs = match
+      quic_recv_handshake(flight_dg, quic_packet_keys(server_hs_secret)) {
+      Some((frames, _)) => split_hs(wire_crypto(frames))
+      None => abort("client could not decrypt the flight")
+    }
+    let through_cv = bytes_concat(
+      bytes_concat(
+        bytes_concat(bytes_concat(ch_msg, sh_msg), msgs[0].2),
+        msgs[1].2,
+      ),
+      msgs[2].2,
+    )
+    let through_server_fin = bytes_concat(through_cv, msgs[3].2)
+    let th_app = sha256(through_server_fin)
+    let client_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+      client_priv, server_pub_wire, th_ch_sh, true,
+    )
+    let client_fin = tls_encode_handshake(
+      20,
+      tls13_finished_verify_data(client_hs_secret, th_app),
+    )
+    client_ep.send_datagram(
+      quic_send_handshake(
+        1U,
+        b"",
+        b"",
+        0,
+        4,
+        [Crypto(offset=0, data=client_fin)],
+        quic_packet_keys(client_hs_secret),
+      ),
+      server_addr,
+    )
+    // 1-RTT keys from the same handshake.
+    let master = tls13_master_secret(
+      tls13_handshake_secret_from_ecdhe(client_priv, server_pub_wire),
+    )
+    let client_app_keys = quic_application_keys(master, th_app, true)
+    let server_app_keys = quic_application_keys(master, th_app, false)
+    client_ep.send_datagram(
+      quic_send_short(
+        false,
+        false,
+        dcid,
+        0,
+        4,
+        [
+          Stream(
+            id=0UL,
+            offset=0UL,
+            fin=true,
+            data=http3_request(
+              "GET",
+              "https",
+              "lfanke.example",
+              "/hello",
+              [],
+              b"",
+            ),
+          ),
+        ],
+        client_app_keys,
+      ),
+      server_addr,
+    )
+    let (resp_dg, _) = client_ep.recv_datagram()
+    let resp_frames = match
+      quic_recv_short(resp_dg, client_cid.length(), server_app_keys) {
+      Some((fr, _)) => fr
+      None => abort("client could not open the response")
+    }
+    let mut resp = b""
+    for frame in resp_frames {
+      match frame {
+        Stream(id~, data~, ..) => if id == 0UL { resp = data }
+        _ => ()
+      }
+    }
+    @async.sleep(50)
+    assert_eq(connected.val, true)
+    let (headers, body) = http3_decode_message(resp)
+    assert_eq(h3_header(headers, ":status"), "200")
+    assert_eq(body, b"one connection")
+    client_ep.close()
+    server_ep.close()
+  })
+}

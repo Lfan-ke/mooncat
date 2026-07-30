@@ -65,7 +65,11 @@ test "full flight: the server's Handshake flight carries real EE, Certificate, a
     transport_param_int(tp_active_connection_id_limit, 8),
   ]
   let ee_body = tls13_quic_encrypted_extensions(alpn_h3, params)
-  let der = b"self-signed-p256-cert-der-heke1228"
+  // A real self-signed X.509 certificate whose key is the one that signs the CertificateVerify,
+  // so the certificate and the signature are consistent — the identity a client authenticates.
+  let der = x509_self_signed(
+    cert_key, b"\x2a", "mooncat.example", "250101000000Z", "350101000000Z",
+  )
   let cert_body = tls13_encode_certificate(b"", [der])
   let flight = server.send_handshake_flight_signed(
     server_hs_secret, ee_body, cert_body, cert_key, b"", b"\x0a\x0b\x0c\x0d", 0,

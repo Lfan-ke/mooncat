@@ -12,6 +12,11 @@ priv struct Http1Request {
   version : String
   headers : Map[String, String]
   content_length : Int
+  // `Transfer-Encoding: chunked` — the body is read as chunks, not by content-length.
+  chunked : Bool
+  // `Expect: 100-continue` — the server sends an interim `100 Continue` before it
+  // reads the body, so the client waits for the go-ahead.
+  expect_continue : Bool
 }
 
 ///|
@@ -92,7 +97,73 @@ async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
     Some(v) => parse_content_length(v)
     None => 0
   }
-  Some({ http_method: verb, target, version, headers, content_length })
+  let chunked = match headers.get("transfer-encoding") {
+    Some(v) => v.to_lower().contains("chunked")
+    None => false
+  }
+  let expect_continue = match headers.get("expect") {
+    Some(v) => v.to_lower().contains("100-continue")
+    None => false
+  }
+  Some({
+    http_method: verb,
+    target,
+    version,
+    headers,
+    content_length,
+    chunked,
+    expect_continue,
+  })
+}
+
+///|
+/// Parse a chunked-body chunk-size line (RFC 7230 §4.1): hexadecimal, up to an
+/// optional `;chunk-ext` or the line end. A non-hex character stops the scan.
+fn parse_chunk_size(s : String) -> Int {
+  let t = ascii_trim(s)
+  let mut acc = 0
+  for i = 0; i < t.length(); i = i + 1 {
+    let c = t[i]
+    let d = if c >= '0' && c <= '9' {
+      c.to_int() - '0'.to_int()
+    } else if c >= 'a' && c <= 'f' {
+      c.to_int() - 'a'.to_int() + 10
+    } else if c >= 'A' && c <= 'F' {
+      c.to_int() - 'A'.to_int() + 10
+    } else {
+      return acc
+    }
+    acc = acc * 16 + d
+  }
+  acc
+}
+
+///|
+/// Read a `Transfer-Encoding: chunked` request body to its decoded bytes (RFC 7230
+/// §4.1): each chunk is a hex size line, that many octets, then a CRLF; a zero-size
+/// chunk ends the body, after which any trailer fields up to the blank line are
+/// consumed.
+async fn read_chunked_body(reader : &@io.Reader) -> Bytes {
+  let buf = Buffer()
+  for ;; {
+    let size_line = reader.read_until("\r\n")
+    guard size_line is Some(sl) else { break }
+    let size = parse_chunk_size(sl)
+    if size <= 0 {
+      // A zero chunk ends the body; drain any trailer fields to the blank line.
+      for ;; {
+        let t = reader.read_until("\r\n")
+        guard t is Some(tl) else { break }
+        if tl.length() == 0 {
+          break
+        }
+      }
+      break
+    }
+    buf.write_bytes(reader.read_exactly(size))
+    let _ = reader.read_exactly(2) // the CRLF terminating the chunk data
+  }
+  buf.to_bytes()
 }
 
 ///|
@@ -193,12 +264,18 @@ async fn dispatch_http1(
       @moonasgi.Event::HttpDisconnect
     } else {
       body_sent.val = true
-      if req.content_length == 0 {
-        @moonasgi.Event::HttpRequest(body=b"", more_body=false)
-      } else {
-        let chunk = reader.read_exactly(req.content_length)
-        @moonasgi.Event::HttpRequest(body=chunk, more_body=false)
+      // Expect: 100-continue — let the client know it may send the body now.
+      if req.expect_continue {
+        writer.write("HTTP/1.1 100 Continue\r\n\r\n")
       }
+      let body = if req.chunked {
+        read_chunked_body(reader)
+      } else if req.content_length == 0 {
+        b""
+      } else {
+        reader.read_exactly(req.content_length)
+      }
+      @moonasgi.Event::HttpRequest(body~, more_body=false)
     }
   }
   let resp_status = Ref(200)
@@ -275,7 +352,12 @@ test "http1 codec: request-line split, content-length, hex, keep-alive" {
     version: "HTTP/1.1",
     headers: Map([]),
     content_length: 0,
+    chunked: false,
+    expect_continue: false,
   }
+  assert_eq(parse_chunk_size("1a"), 26)
+  assert_eq(parse_chunk_size("ff;name=v"), 255)
+  assert_eq(parse_chunk_size("0"), 0)
   assert_eq(should_keep_alive(ka_11), true)
   let close_11 : Http1Request = {
     ..ka_11,
@@ -290,4 +372,37 @@ test "http1 codec: request-line split, content-length, hex, keep-alive" {
   assert_eq(should_keep_alive(ka_10), true)
   let close_10 : Http1Request = { ..ka_11, version: "HTTP/1.0" }
   assert_eq(should_keep_alive(close_10), false)
+}
+
+///|
+async test "http1: parse detects Transfer-Encoding chunked and Expect 100-continue" {
+  let (r, w) = @pipe.pipe()
+  w.write(
+    b"POST /u HTTP/1.1\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n",
+  )
+  w.close()
+  guard parse_http1_request(r) is Some(req) else {
+    fail("expected a parsed request")
+  }
+  assert_eq(req.chunked, true)
+  assert_eq(req.expect_continue, true)
+  assert_eq(req.http_method, "POST")
+}
+
+///|
+async test "http1: a chunked request body decodes to the joined chunk data" {
+  let (r, w) = @pipe.pipe()
+  // Two data chunks ("hello" + " world") then the terminating zero chunk.
+  w.write(b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")
+  w.close()
+  assert_eq(read_chunked_body(r) == b"hello world", true)
+}
+
+///|
+async test "http1: a chunked body with a chunk extension and a trailer decodes cleanly" {
+  let (r, w) = @pipe.pipe()
+  // A chunk-size line carries a `;ext`, and a trailer field follows the zero chunk.
+  w.write(b"4;n=v\r\ndata\r\n0\r\nx-checksum: 1\r\n\r\n")
+  w.close()
+  assert_eq(read_chunked_body(r) == b"data", true)
 }

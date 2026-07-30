@@ -1,0 +1,111 @@
+// The assembled QUIC send loop driving a real UDP socket (RFC 9000 §13, RFC 9002): the sender
+// polls QuicSender for packets, seals each into a 1-RTT packet and puts it on the wire; the
+// receiver reassembles the stream and acknowledges; the sender feeds the ACK back to QuicSender,
+// clearing the outstanding packets. This is the async glue over the deterministic send core.
+
+///|
+async test "quic send loop over udp: QuicSender streams data through 1-RTT packets and an ACK clears it" {
+  @async.with_task_group(g => {
+    let master_secret = qv_hexb(
+      "2333333333333333333333333333333333333333333333333333333333333333",
+    )
+    let th = sha256(b"send-loop-wire-lfanke")
+    let sender_keys = quic_application_keys(master_secret, th, true)
+    let ack_keys = quic_application_keys(master_secret, th, false)
+    let server_cid = qv_hexb("00112233aabbccdd")
+    let client_cid = qv_hexb("66778899eeff0011")
+    let payload = b"hello-quic-send-loop!" // 21 bytes → three 8/8/5 frames at max_frame 8
+    let receiver_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let receiver_addr = receiver_ep.local_addr()
+    let reassembled : Ref[Bytes] = { val: b"" }
+    // Receiver: take three data packets, reassemble the stream, and send one ACK back.
+    let _ = g.spawn(() => {
+      let reasm = StreamReassembler::new()
+      let acked = AckRangeSet::new()
+      let (first, from) = receiver_ep.recv_datagram()
+      let note = dg => {
+        match
+          (quic_recv_short(dg, server_cid.length(), sender_keys) catch {
+            _ => None
+          }) {
+          Some((frames, pn)) => {
+            acked.add(pn.reinterpret_as_uint64())
+            for frame in frames {
+              match frame {
+                Stream(offset~, data~, ..) =>
+                  reasm.insert(offset, data, false) catch {
+                    _ => ()
+                  }
+                _ => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      note(first)
+      for _i = 1; _i < 3; _i = _i + 1 {
+        let (dg, _) = receiver_ep.recv_datagram()
+        note(dg)
+      }
+      reassembled.val = reasm.read()
+      match acked.to_ack_fields() {
+        Some((largest, first_range, pairs)) => {
+          let ack : QuicFrame = Ack(
+            largest~,
+            delay=0UL,
+            first_range~,
+            ranges=pairs,
+          )
+          let pkt = quic_send_short(
+            false,
+            false,
+            client_cid,
+            0,
+            4,
+            [ack],
+            ack_keys,
+          )
+          receiver_ep.send_datagram(pkt, from)
+        }
+        None => ()
+      }
+    })
+    @async.sleep(100)
+    // Sender: queue the stream and drive QuicSender, sealing each polled packet onto the wire.
+    let sender_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let sender = QuicSender::new(100000UL, 100000UL, 1200L, 25000L, 1000L, 8UL)
+    sender.queue_stream(0UL, payload)
+    let mut t = 0L
+    for ;; {
+      match sender.poll_send(t) {
+        Some((pn, frames)) => {
+          let pkt = quic_send_short(
+            false, false, server_cid, pn, 4, frames, sender_keys,
+          )
+          sender_ep.send_datagram(pkt, receiver_addr)
+          t = t + 1L
+        }
+        None => break
+      }
+    }
+    // Open the ACK off the wire and clear the outstanding packets.
+    let (ack_dg, _) = sender_ep.recv_datagram()
+    match quic_recv_short(ack_dg, client_cid.length(), ack_keys) {
+      Some((frames, _)) =>
+        for frame in frames {
+          match frame {
+            Ack(..) => sender.on_ack(frame, 100L)
+            _ => ()
+          }
+        }
+      None => abort("sender could not open the ACK over the wire")
+    }
+    @async.sleep(50)
+    // The receiver reassembled exactly what was queued, and the sender has nothing outstanding.
+    assert_eq(reassembled.val, payload)
+    assert_eq(sender.outstanding(), [])
+    sender_ep.close()
+    receiver_ep.close()
+  })
+}

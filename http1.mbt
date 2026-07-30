@@ -301,6 +301,8 @@ async fn dispatch_http1(
   // so a streamed 1.0 response is framed by connection close instead.
   let is_http10 = req.version == "HTTP/1.0"
   let resp_version = if is_http10 { "HTTP/1.0" } else { "HTTP/1.1" }
+  // A HEAD response carries the same headers as GET but no body (RFC 7231 §4.3.2).
+  let is_head = req.http_method == "HEAD"
   let close_delimited = Ref(false)
   let head = fn(extra : String) -> String {
     let sb = StringBuilder::new()
@@ -351,7 +353,14 @@ async fn dispatch_http1(
           started.val = true
           if !more_body {
             writer.write(head("content-length: \{body.length()}\r\n\r\n"))
-            writer.write(body)
+            if !is_head {
+              writer.write(body)
+            }
+            ended.val = true
+          } else if is_head {
+            // A HEAD response carries the framing headers a GET would but no body,
+            // and no chunk terminator; the head alone completes it.
+            writer.write(head("transfer-encoding: chunked\r\n\r\n"))
             ended.val = true
           } else if is_http10 {
             // No chunked on HTTP/1.0: frame the stream by closing the connection.
@@ -479,6 +488,17 @@ async fn run_h1(req : Http1Request) -> Bytes {
   let _ = dispatch_http1(app, req, req_r, resp_w, scheme="http")
   resp_w.close()
   drain_pipe(resp_r)
+}
+
+///|
+async test "http1: a HEAD request keeps content-length but suppresses the body" {
+  let head_resp = run_h1({ ..h1_req("HTTP/1.1"), http_method: "HEAD" })
+  // The framing header a GET would send is present...
+  assert_eq(bytes_has(head_resp, b"content-length: 2"), true)
+  // ...but the body ("hi") is not.
+  assert_eq(bytes_has(head_resp, b"hi"), false)
+  // A GET on the same app does include the body.
+  assert_eq(bytes_has(run_h1(h1_req("HTTP/1.1")), b"hi"), true)
 }
 
 ///|

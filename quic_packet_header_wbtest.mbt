@@ -6,7 +6,7 @@ test "parse the RFC 9001 A.1 sample client Initial long header" {
   let bytes = qv_hexb("c300000001088394c8f03e51570800")
   match parse_long_header(bytes[:]) {
     Some((h, consumed)) => {
-      assert_eq(h.packet_type, Initial)
+      assert_eq(h.packet_type, QuicLongPacketType::Initial)
       assert_eq(h.type_specific, 3)
       assert_eq(h.version, 1)
       assert_eq(qv_hex(h.dcid), "8394c8f03e515708")
@@ -19,7 +19,12 @@ test "parse the RFC 9001 A.1 sample client Initial long header" {
 
 ///|
 test "long header round-trips for every packet type" {
-  let types = [Initial, ZeroRtt, Handshake, Retry]
+  let types = [
+    QuicLongPacketType::Initial,
+    ZeroRtt,
+    QuicLongPacketType::Handshake,
+    Retry,
+  ]
   for t in types {
     let h : QuicLongHeader = {
       packet_type: t,

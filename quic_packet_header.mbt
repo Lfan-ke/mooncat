@@ -73,9 +73,9 @@ pub fn parse_long_header(b : BytesView) -> (QuicLongHeader, Int)? {
     return None
   }
   let packet_type = match (first >> 4) & 0x03 {
-    0 => Initial
+    0 => QuicLongPacketType::Initial
     1 => ZeroRtt
-    2 => Handshake
+    2 => QuicLongPacketType::Handshake
     _ => Retry
   }
   let type_specific = first & 0x0f

@@ -45,3 +45,41 @@ pub fn tls13_ecdhe_handshake_traffic_secret(
     tls13_server_hs_traffic_secret(handshake_secret, transcript_hash)
   }
 }
+
+///|
+/// The server's handshake traffic secret derived from a received ClientHello message alone:
+/// parse it, pull out the client's x25519 key_share, and run the ECDHE with the server's
+/// ephemeral `server_private` over the ClientHello..ServerHello `transcript_hash`. `None` if
+/// the message is not a ClientHello or offers no x25519 share.
+pub fn tls13_server_hs_secret_from_client_hello(
+  client_hello : Bytes,
+  server_private : Bytes,
+  transcript_hash : Bytes,
+) -> Bytes? {
+  let (msg_type, body) = match tls_parse_handshake(client_hello[:]) {
+    Some(v) => v
+    None => return None
+  }
+  if msg_type != tls_client_hello {
+    return None
+  }
+  let ch = match decode_client_hello(body[:]) {
+    Some(v) => v
+    None => return None
+  }
+  let mut client_public : Bytes? = None
+  for share in tls_client_hello_key_shares(ch.extensions) {
+    if share.0 == tls_group_x25519 {
+      client_public = Some(share.1)
+    }
+  }
+  match client_public {
+    Some(pub_key) =>
+      Some(
+        tls13_ecdhe_handshake_traffic_secret(
+          server_private, pub_key, transcript_hash, false,
+        ),
+      )
+    None => None
+  }
+}

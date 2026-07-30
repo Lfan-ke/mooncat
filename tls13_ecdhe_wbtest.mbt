@@ -57,4 +57,20 @@ test "ECDHE: peers agree on the handshake traffic secrets via their hello key_sh
     tls13_ecdhe_handshake_traffic_secret(server_priv, peer_client_pub, th, true),
     tls13_ecdhe_handshake_traffic_secret(client_priv, peer_server_pub, th, true),
   )
+  // The server can derive its handshake secret from the received ClientHello message alone.
+  let server_from_ch = match
+    tls13_server_hs_secret_from_client_hello(
+      encode_client_hello(ch),
+      server_priv,
+      th,
+    ) {
+    Some(v) => v
+    None => abort("server could not derive from the ClientHello")
+  }
+  assert_eq(
+    server_from_ch,
+    tls13_ecdhe_handshake_traffic_secret(
+      client_priv, peer_server_pub, th, false,
+    ),
+  )
 }

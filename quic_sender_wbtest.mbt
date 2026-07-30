@@ -47,6 +47,41 @@ test "sender: schedules queued stream data into packets and an ACK clears them" 
 }
 
 ///|
+test "sender: a probe timeout re-queues the oldest outstanding packet's data" {
+  let s = QuicSender::new(100000UL, 100000UL, 1200L, 25000L, 1000L, 8UL)
+  s.queue_stream(0UL, b"0123") // 4 bytes → one packet
+  let (pn0, _) = sender_poll(s, 0L)
+  assert_eq(pn0, 0L)
+  // Nothing new is queued before the timeout fires.
+  match s.poll_send(1L) {
+    None => ()
+    Some(_) => abort("expected nothing queued before the probe timeout")
+  }
+  // The probe timer is armed; firing it before the deadline is a no-op.
+  guard s.recovery.pto_deadline() is Some(deadline) else {
+    abort("expected the probe timer armed")
+  }
+  assert_eq(s.on_pto_timeout(deadline - 1L), false)
+  assert_eq(s.recovery.pto_count(), 0)
+  // At the deadline the oldest outstanding packet's data is re-queued and the timer backs off.
+  assert_eq(s.on_pto_timeout(deadline), true)
+  assert_eq(s.recovery.pto_count(), 1)
+  // A later poll_send puts the probe on the wire as a new packet carrying the same stream data.
+  let (pn1, f1) = sender_poll(s, deadline + 1L)
+  assert_eq(pn1, 1L)
+  match f1[0] {
+    Stream(id~, offset~, data~, ..) => {
+      assert_eq(id, 0UL)
+      assert_eq(offset, 0UL)
+      assert_eq(data, b"0123")
+    }
+    _ => abort("expected the probe to carry the stream data")
+  }
+  // A probe does not clear the original: both packets are now outstanding.
+  assert_eq(s.outstanding().length(), 2)
+}
+
+///|
 test "sender: a lost packet's stream data is re-queued and retransmitted" {
   let s = QuicSender::new(100000UL, 100000UL, 1200L, 25000L, 1000L, 4UL)
   s.queue_stream(0UL, b"0123456789abcdefghij") // 20 bytes, max frame 4 → five packets 0..4

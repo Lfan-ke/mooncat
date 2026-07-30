@@ -109,3 +109,115 @@ async test "quic send loop over udp: QuicSender streams data through 1-RTT packe
     receiver_ep.close()
   })
 }
+
+///|
+async test "quic send loop over udp: a probe timeout retransmits over the wire and the receiver reassembles it" {
+  @async.with_task_group(g => {
+    let master_secret = qv_hexb(
+      "2333333333333333333333333333333333333333333333333333333333333333",
+    )
+    let th = sha256(b"send-loop-pto-lfanke")
+    let sender_keys = quic_application_keys(master_secret, th, true)
+    let ack_keys = quic_application_keys(master_secret, th, false)
+    let server_cid = qv_hexb("00112233aabbccdd")
+    let client_cid = qv_hexb("66778899eeff0011")
+    let payload = b"probe!!" // 7 bytes → one STREAM frame at max_frame 8
+    let receiver_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let receiver_addr = receiver_ep.local_addr()
+    let reassembled : Ref[Bytes] = { val: b"" }
+    // Receiver: the first packet's ACK is "lost" — it is received but never acknowledged. Only the
+    // probe (second packet) is reassembled and acknowledged.
+    let _ = g.spawn(() => {
+      let reasm = StreamReassembler::new()
+      let acked = AckRangeSet::new()
+      let (_first, _from) = receiver_ep.recv_datagram()
+      let (probe, from) = receiver_ep.recv_datagram()
+      match
+        (quic_recv_short(probe, server_cid.length(), sender_keys) catch {
+          _ => None
+        }) {
+        Some((frames, pn)) => {
+          acked.add(pn.reinterpret_as_uint64())
+          for frame in frames {
+            match frame {
+              Stream(offset~, data~, ..) =>
+                reasm.insert(offset, data, false) catch {
+                  _ => ()
+                }
+              _ => ()
+            }
+          }
+        }
+        None => ()
+      }
+      reassembled.val = reasm.read()
+      match acked.to_ack_fields() {
+        Some((largest, first_range, pairs)) => {
+          let ack : QuicFrame = Ack(
+            largest~,
+            delay=0UL,
+            first_range~,
+            ranges=pairs,
+          )
+          let pkt = quic_send_short(
+            false,
+            false,
+            client_cid,
+            0,
+            4,
+            [ack],
+            ack_keys,
+          )
+          receiver_ep.send_datagram(pkt, from)
+        }
+        None => ()
+      }
+    })
+    @async.sleep(100)
+    let sender_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let sender = QuicSender::new(100000UL, 100000UL, 1200L, 25000L, 1000L, 8UL)
+    sender.queue_stream(0UL, payload)
+    // The original packet goes on the wire.
+    match sender.poll_send(0L) {
+      Some((pn, frames)) => {
+        let pkt = quic_send_short(
+          false, false, server_cid, pn, 4, frames, sender_keys,
+        )
+        sender_ep.send_datagram(pkt, receiver_addr)
+      }
+      None => abort("expected an initial packet")
+    }
+    // No ACK arrives; the probe timeout fires and re-queues the outstanding data.
+    guard sender.recovery.pto_deadline() is Some(deadline) else {
+      abort("expected the probe timer armed")
+    }
+    assert_eq(sender.on_pto_timeout(deadline), true)
+    // The probe crosses the wire as a fresh packet carrying the same stream data.
+    match sender.poll_send(deadline + 1L) {
+      Some((pn, frames)) => {
+        let pkt = quic_send_short(
+          false, false, server_cid, pn, 4, frames, sender_keys,
+        )
+        sender_ep.send_datagram(pkt, receiver_addr)
+      }
+      None => abort("expected the probe packet")
+    }
+    let (ack_dg, _) = sender_ep.recv_datagram()
+    match quic_recv_short(ack_dg, client_cid.length(), ack_keys) {
+      Some((frames, _)) =>
+        for frame in frames {
+          match frame {
+            Ack(..) => sender.on_ack(frame, deadline + 100L)
+            _ => ()
+          }
+        }
+      None => abort("sender could not open the probe ACK over the wire")
+    }
+    @async.sleep(50)
+    // The receiver reassembled the payload from the retransmitted probe. (The ACK for the probe
+    // has reset the probe count, per RFC 9002 §6.2.1 — the deterministic test checks the backoff.)
+    assert_eq(reassembled.val, payload)
+    sender_ep.close()
+    receiver_ep.close()
+  })
+}

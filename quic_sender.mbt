@@ -133,6 +133,34 @@ pub fn QuicSender::on_ack(
 }
 
 ///|
+/// Handle the probe timeout firing at `now` (RFC 9002 §6.2.4). If the PTO deadline has passed with
+/// packets still outstanding, re-queue the oldest outstanding packet's stream data as a probe — a
+/// later `poll_send` puts it back on the wire — and back off the timer for the next arming. Unlike
+/// loss detection, this neither declares packets lost nor reduces the congestion window. Returns
+/// whether a probe was armed.
+pub fn QuicSender::on_pto_timeout(self : QuicSender, now : Int64) -> Bool {
+  guard self.recovery.pto_deadline() is Some(deadline) else { return false }
+  guard now >= deadline else { return false }
+  let out = self.recovery.outstanding()
+  guard out.length() > 0 else { return false }
+  let mut oldest = out[0]
+  for pn in out {
+    if pn < oldest {
+      oldest = pn
+    }
+  }
+  match self.in_packet.get(oldest) {
+    Some(sends) =>
+      for s in sends {
+        self.retransmit.push(s)
+      }
+    None => ()
+  }
+  self.recovery.on_pto()
+  true
+}
+
+///|
 /// The packet numbers still outstanding (sent, not yet acknowledged or declared lost).
 pub fn QuicSender::outstanding(self : QuicSender) -> Array[Int64] {
   self.recovery.outstanding()

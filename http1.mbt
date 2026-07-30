@@ -106,6 +106,7 @@ async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
       headers[key] = value
     }
   }
+  let has_content_length = headers.get("content-length") is Some(_)
   let content_length = match headers.get("content-length") {
     Some(v) => parse_content_length(v)
     None => 0
@@ -113,6 +114,11 @@ async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
   let chunked = match headers.get("transfer-encoding") {
     Some(v) => v.to_lower().contains("chunked")
     None => false
+  }
+  // Both a Content-Length and a chunked Transfer-Encoding is ambiguous — a request-
+  // smuggling vector — so reject it rather than pick one (RFC 7230 §3.3.3).
+  if chunked && has_content_length {
+    return None
   }
   let expect_continue = match headers.get("expect") {
     Some(v) => v.to_lower().contains("100-continue")
@@ -638,6 +644,17 @@ async test "http1: configured server headers ride the response, unless the app s
   let resp2 = drain_pipe(resp_r2)
   assert_eq(bytes_has(resp2, b"server: myapp"), true)
   assert_eq(bytes_has(resp2, b"server: mooncat"), false)
+}
+
+///|
+async test "http1: a request with both Content-Length and chunked is rejected" {
+  let (r, w) = @pipe.pipe()
+  // Content-Length + Transfer-Encoding: chunked is a request-smuggling ambiguity.
+  w.write(
+    b"POST /u HTTP/1.1\r\ncontent-length: 5\r\ntransfer-encoding: chunked\r\n\r\n",
+  )
+  w.close()
+  assert_eq(parse_http1_request(r) is None, true)
 }
 
 ///|

@@ -6,12 +6,6 @@
 // string length, the field-section prefix's insert count and base.
 
 ///|
-/// A malformed QPACK encoding.
-pub suberror QpackError {
-  QpackError(String)
-}
-
-///|
 /// Encode `value` as an RFC 7541 §5.1 `prefix_bits`-prefix integer, OR-ing `flags` into
 /// the high `8 - prefix_bits` bits of the first byte (the representation's pattern).
 pub fn qpack_int_encode(value : Int, prefix_bits : Int, flags : Int) -> Bytes {

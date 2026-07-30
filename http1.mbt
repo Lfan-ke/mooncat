@@ -20,6 +20,12 @@ priv struct Http1Request {
 }
 
 ///|
+/// The cap on a request's head (request line + all header lines). A peer exceeding
+/// it is rejected before its headers can pin unbounded memory — uvicorn's
+/// `h11_max_incomplete_event_size` default of 16 KiB.
+let max_head_size : Int = 16 * 1024
+
+///|
 /// Index of the first `ch` in `s` at or after `from`, or `-1`. Operates on the
 /// `UInt16` code units `String` indexing yields; HTTP request/header syntax is
 /// ASCII so code-unit scanning is exact.
@@ -78,11 +84,18 @@ async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
     return None
   }
   let headers : Map[String, String] = Map([])
+  // Bound the request head: a peer that never sends the terminating blank line (an
+  // endless stream of header lines) must not grow the buffer without limit.
+  let mut head_bytes = request_line.length() + 2
   for ;; {
     let h = reader.read_until("\r\n")
     guard h is Some(header_line) else { break }
     if header_line.length() == 0 {
       break
+    }
+    head_bytes = head_bytes + header_line.length() + 2
+    if head_bytes > max_head_size {
+      return None
     }
     let colon = index_of(header_line, ':', 0)
     if colon >= 0 {
@@ -485,6 +498,46 @@ async test "http1: parse detects Transfer-Encoding chunked and Expect 100-contin
   assert_eq(req.chunked, true)
   assert_eq(req.expect_continue, true)
   assert_eq(req.http_method, "POST")
+}
+
+///|
+async test "http1: a request head past the size cap is rejected" {
+  @async.with_task_group(g => {
+    let (r, w) = @pipe.pipe()
+    // A header block well past max_head_size (16 KiB) with no terminating blank line
+    // before the cap; parsing must give up with None rather than buffer on. The write
+    // is larger than a pipe buffer, so it runs concurrently with the read.
+    let writer = g.spawn(() => {
+      let head = StringBuilder::new()
+      head.write_string("GET / HTTP/1.1\r\n")
+      for _i = 0; _i < 400; _i = _i + 1 {
+        head.write_string("x-pad: ")
+        for _j = 0; _j < 60; _j = _j + 1 {
+          head.write_string("a")
+        }
+        head.write_string("\r\n")
+      }
+      w.write(@utf8.encode(head.to_string())) catch {
+        _ => ()
+      }
+      w.close()
+    })
+    assert_eq(parse_http1_request(r) is None, true)
+    // The parser stops reading once the cap is hit, so the writer may still be blocked
+    // on the unread tail; release it now that the assertion holds.
+    writer.cancel()
+  })
+}
+
+///|
+async test "http1: a normal small request head parses under the cap" {
+  let (r, w) = @pipe.pipe()
+  w.write(b"GET /ok HTTP/1.1\r\nhost: x\r\n\r\n")
+  w.close()
+  guard parse_http1_request(r) is Some(req) else {
+    fail("expected a parsed request")
+  }
+  assert_eq(req.target, "/ok")
 }
 
 ///|

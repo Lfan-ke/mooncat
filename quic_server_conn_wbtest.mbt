@@ -204,6 +204,134 @@ test "server conn: send_handshake_flight emits EE/Cert/CertVerify/Finished the c
 }
 
 ///|
+test "server conn: receive_handshake verifies the client Finished and reaches CONNECTED" {
+  let dcid = qv_hexb("8394c8f03e515708")
+  let initial_keys = client_initial_keys(dcid)
+  let server = QuicServerConn::new(dcid)
+  // Drive the server through ClientHello, ServerHello, and its Handshake flight.
+  let ch = tls_encode_handshake(1, b"ch")
+  let ch_packet = quic_send_initial(
+    1U,
+    dcid,
+    b"",
+    b"",
+    0,
+    4,
+    [Crypto(offset=0, data=ch)],
+    initial_keys,
+  )
+  let _ = server.receive_initial(ch_packet)
+  let sh = TlsServerHello::{
+    random: Bytes::make(32, b'\xcd'),
+    session_id: b"",
+    cipher_suite: 0x1301,
+    extensions: [],
+  }
+  let _ = server.send_server_hello(sh, b"", b"\x0a\x0b\x0c\x0d", 0)
+  let sh_msg = encode_server_hello(sh)
+  let server_secret = qv_hexb(
+    "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38",
+  )
+  let ee_body = b"encrypted-extensions"
+  let cert_body = b"the-server-certificate"
+  let cv_body = b"the-certificate-verify-signature"
+  let _ = server.send_handshake_flight(
+    server_secret, ee_body, cert_body, cv_body, b"", b"\x0a\x0b\x0c\x0d", 0,
+  )
+  assert_eq(server.handshake_state(), WaitFinished)
+  // Reconstruct the transcript the server holds, through its own Finished, so the client
+  // can compute its Finished over the same bytes.
+  let ee = tls_encode_handshake(8, ee_body)
+  let cert = tls_encode_handshake(11, cert_body)
+  let cv = tls_encode_handshake(15, cv_body)
+  let through_cv = bytes_concat(
+    bytes_concat(bytes_concat(bytes_concat(ch, sh_msg), ee), cert),
+    cv,
+  )
+  let server_fin = tls_encode_handshake(
+    20,
+    tls13_finished_verify_data(server_secret, sha256(through_cv)),
+  )
+  let through_server_fin = bytes_concat(through_cv, server_fin)
+  // The client Finished MACs the transcript through the server Finished with the client
+  // handshake secret; it travels in a Handshake packet protected with the client keys.
+  let client_secret = qv_hexb(
+    "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21",
+  )
+  let client_fin = tls_encode_handshake(
+    20,
+    tls13_finished_verify_data(client_secret, sha256(through_server_fin)),
+  )
+  let client_keys = quic_packet_keys(client_secret)
+  let fin_packet = quic_send_handshake(
+    1U,
+    b"",
+    b"",
+    0,
+    4,
+    [Crypto(offset=0, data=client_fin)],
+    client_keys,
+  )
+  assert_eq(
+    server.receive_handshake(fin_packet, client_keys, client_secret),
+    true,
+  )
+  assert_eq(server.handshake_state(), Connected)
+}
+
+///|
+test "server conn: receive_handshake rejects a Finished with the wrong verify_data" {
+  let dcid = qv_hexb("8394c8f03e515708")
+  let initial_keys = client_initial_keys(dcid)
+  let server = QuicServerConn::new(dcid)
+  let ch = tls_encode_handshake(1, b"ch")
+  let ch_packet = quic_send_initial(
+    1U,
+    dcid,
+    b"",
+    b"",
+    0,
+    4,
+    [Crypto(offset=0, data=ch)],
+    initial_keys,
+  )
+  let _ = server.receive_initial(ch_packet)
+  let sh = TlsServerHello::{
+    random: Bytes::make(32, b'\xcd'),
+    session_id: b"",
+    cipher_suite: 0x1301,
+    extensions: [],
+  }
+  let _ = server.send_server_hello(sh, b"", b"\x0a\x0b\x0c\x0d", 0)
+  let server_secret = qv_hexb(
+    "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38",
+  )
+  let _ = server.send_handshake_flight(
+    server_secret, b"ee", b"cert", b"cv", b"", b"\x0a\x0b\x0c\x0d", 0,
+  )
+  // A Finished whose verify_data is garbage does not authenticate: receive_handshake
+  // returns false even though the message advances the state.
+  let client_secret = qv_hexb(
+    "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21",
+  )
+  let bad_fin = tls_encode_handshake(20, Bytes::make(32, b'\x00'))
+  let client_keys = quic_packet_keys(client_secret)
+  let fin_packet = quic_send_handshake(
+    1U,
+    b"",
+    b"",
+    0,
+    4,
+    [Crypto(offset=0, data=bad_fin)],
+    client_keys,
+  )
+  assert_eq(
+    server.receive_handshake(fin_packet, client_keys, client_secret),
+    false,
+  )
+}
+
+///|
 test "server conn: a tampered Initial packet is rejected" {
   let dcid = qv_hexb("8394c8f03e515708")
   let keys = client_initial_keys(dcid)

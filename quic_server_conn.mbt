@@ -155,3 +155,62 @@ pub fn QuicServerConn::receive_initial(
   }
   processed
 }
+
+///|
+/// Receive the client's Handshake-space flight — in this no-client-authentication path,
+/// the client Finished (RFC 8446 §4.4.4): unprotect the Handshake packet with the client
+/// handshake keys, reassemble its CRYPTO stream, verify the Finished `verify_data` against
+/// `client_hs_secret` over the transcript through the server Finished, then fold it in to
+/// advance the handshake to CONNECTED. Returns whether the handshake is now connected with
+/// a Finished that authenticated. Raises if the packet fails to authenticate.
+pub fn QuicServerConn::receive_handshake(
+  self : QuicServerConn,
+  packet : Bytes,
+  client_hs_keys : QuicPacketKeys,
+  client_hs_secret : Bytes,
+) -> Bool raise {
+  let (frames, pn) = match quic_recv_handshake(packet, client_hs_keys) {
+    Some(v) => v
+    None => raise QuicPayloadError("Handshake packet failed to authenticate")
+  }
+  self.conn.on_packet_received(
+    QuicLevel::Handshake,
+    pn,
+    quic_payload_is_ack_eliciting(frames),
+  )
+  let mut finished_ok = false
+  for frame in frames {
+    match frame {
+      Crypto(offset~, data~) => {
+        let contiguous = self.conn.on_crypto_frame(
+          QuicLevel::Handshake,
+          offset,
+          data,
+        )
+        if contiguous.length() > 0 {
+          // The Finished MACs the transcript as it stands now (through the server Finished),
+          // so verify against the current hash before folding the client Finished in.
+          let th = self.handshake.transcript_hash()
+          let view = contiguous[:]
+          let mut off = 0
+          for ;; {
+            match tls_parse_handshake(view[off:]) {
+              Some((t, body)) => {
+                if t == tls_hs_finished {
+                  finished_ok = tls13_finished_verify(
+                    client_hs_secret, th, body,
+                  )
+                }
+                off = off + 4 + body.length()
+              }
+              None => break
+            }
+          }
+          let _ = self.handshake.feed(contiguous)
+        }
+      }
+      _ => ()
+    }
+  }
+  self.handshake.is_connected() && finished_ok
+}

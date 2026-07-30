@@ -12,6 +12,36 @@
 pub let tls_group_x25519 : Int = 0x001d
 
 ///|
+/// The key_share extension type (RFC 8446 §4.2.8).
+pub let tls_ext_key_share : Int = 0x0033
+
+///|
+/// The `(group, key)` of a ServerHello's key_share extension, or `None` if it has none.
+pub fn tls_server_hello_key_share(sh : TlsServerHello) -> (Int, Bytes)? {
+  match tls_find_extension(sh.extensions, tls_ext_key_share) {
+    Some(ext) => tls_decode_key_share_server(ext.data[:])
+    None => None
+  }
+}
+
+///|
+/// The list of `(group, key)` shares a ClientHello's key_share extension offers.
+pub fn tls_client_hello_key_shares(
+  extensions : Array[TlsExtension],
+) -> Array[(Int, Bytes)] {
+  match tls_find_extension(extensions, tls_ext_key_share) {
+    Some(ext) => tls_decode_key_share_client(ext.data[:])
+    None => []
+  }
+}
+
+///|
+/// Build a ServerHello key_share extension carrying `key` for `group`.
+pub fn tls_key_share_extension(group : Int, key : Bytes) -> TlsExtension {
+  { ext_type: tls_ext_key_share, data: tls_encode_key_share_server(group, key) }
+}
+
+///|
 fn ks_write_u16(buf : Buffer, v : Int) -> Unit {
   buf.write_byte(((v >> 8) & 0xff).to_byte())
   buf.write_byte((v & 0xff).to_byte())

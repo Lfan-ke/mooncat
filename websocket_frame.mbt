@@ -5,6 +5,13 @@
 // upgraded socket ourselves. This is the codec half; the runtime half feeds it the socket's bytes.
 
 ///|
+/// A WebSocket protocol violation detected while framing (a reserved opcode), distinct from the
+/// reader's end-of-stream.
+pub suberror WsError {
+  WsError(String)
+}
+
+///|
 /// A WebSocket frame opcode (RFC 6455 §5.2): the data opcodes (continuation / text / binary) and
 /// the control opcodes (close / ping / pong).
 pub(all) enum WsOpcode {
@@ -152,4 +159,45 @@ pub fn ws_decode_frame(b : BytesView) -> (WsFrame, Int)? {
     }
   }
   Some(({ fin, opcode, payload: payload.to_bytes() }, off + len))
+}
+
+///|
+/// Read one WebSocket frame off a raw byte stream (RFC 6455 §5.2) — the runtime counterpart of
+/// `ws_decode_frame`. Reads the 2-byte prefix, then the extended length (16- or 64-bit), the masking
+/// key, and the payload as the prefix dictates, unmasking the payload. Raises `WsError` on a
+/// reserved opcode and propagates the reader's end-of-stream.
+pub async fn ws_read_frame(reader : &@io.Reader) -> WsFrame {
+  let h = reader.read_exactly(2)
+  let b0 = h[0].to_int()
+  let fin = (b0 & 0x80) != 0
+  let opcode = match ws_opcode_of_int(b0 & 0x0F) {
+    Some(op) => op
+    None => raise WsError("reserved WebSocket opcode")
+  }
+  let b1 = h[1].to_int()
+  let masked = (b1 & 0x80) != 0
+  let mut len = b1 & 0x7F
+  if len == 126 {
+    let e = reader.read_exactly(2)
+    len = (e[0].to_int() << 8) | e[1].to_int()
+  } else if len == 127 {
+    let e = reader.read_exactly(8)
+    let mut l = 0L
+    for i = 0; i < 8; i = i + 1 {
+      l = (l << 8) | e[i].to_int().to_int64()
+    }
+    len = l.to_int()
+  }
+  let mask = if masked { reader.read_exactly(4) } else { b"" }
+  let raw = reader.read_exactly(len)
+  let payload = if masked {
+    let buf = Buffer()
+    for i = 0; i < len; i = i + 1 {
+      buf.write_byte((raw[i].to_int() ^ mask[i % 4].to_int()).to_byte())
+    }
+    buf.to_bytes()
+  } else {
+    raw
+  }
+  { fin, opcode, payload }
 }

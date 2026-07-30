@@ -63,6 +63,26 @@ test "ws frame: 16-bit and 64-bit length forms round-trip" {
 }
 
 ///|
+async test "ws_read_frame reads consecutive frames off a raw stream" {
+  @async.with_task_group(_g => {
+    // A masked client text "Hello" followed by an unmasked ping "hi", back to back.
+    let masked = ws_encode_frame(true, Text, b"Hello", mask=b"\x37\xfa\x21\x3d")
+    let ping = ws_encode_frame(true, Ping, b"hi")
+    let reader : &@io.Reader = @io.MemoryReader(async fn(w) {
+      w.write(masked)
+      w.write(ping)
+    })
+    let f1 = ws_read_frame(reader)
+    assert_eq(f1.opcode, Text)
+    assert_eq(f1.fin, true)
+    assert_eq(f1.payload, b"Hello")
+    let f2 = ws_read_frame(reader)
+    assert_eq(f2.opcode, Ping)
+    assert_eq(f2.payload, b"hi")
+  })
+}
+
+///|
 test "ws frame: an incomplete frame decodes to None" {
   // A masked header claiming 5 payload bytes but only 2 present.
   assert_eq(ws_decode_frame(b"\x81\x85\x37\xfa\x21\x3d\x7f\x9f"[:]), None)

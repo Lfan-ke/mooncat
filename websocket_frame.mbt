@@ -201,3 +201,86 @@ pub async fn ws_read_frame(reader : &@io.Reader) -> WsFrame {
   }
   { fin, opcode, payload }
 }
+
+///|
+/// A complete WebSocket application message read off a raw stream: a text or binary message with its
+/// reassembled payload bytes, or a close with its code and reason bytes. Control frames never surface
+/// here — `ws_read_message` handles them — matching what uvicorn hands the ASGI app. Text is carried
+/// as bytes; the UTF-8 decode to a `String` happens at the ASGI boundary.
+pub(all) enum WsMessage {
+  WsText(Bytes)
+  WsBinary(Bytes)
+  WsClose(Int, Bytes)
+} derive(Eq, Debug)
+
+///|
+/// The status code of a close frame's payload (RFC 6455 §5.5.1 / §7.1.5): the leading 16-bit value,
+/// or `1005` ("no status received") when the payload carries none.
+fn ws_close_code(payload : Bytes) -> Int {
+  if payload.length() >= 2 {
+    (payload[0].to_int() << 8) | payload[1].to_int()
+  } else {
+    1005
+  }
+}
+
+///|
+/// The reason bytes of a close frame's payload — everything after the 2-byte status code.
+fn ws_close_reason(payload : Bytes) -> Bytes {
+  if payload.length() > 2 {
+    payload[2:].to_owned()
+  } else {
+    b""
+  }
+}
+
+///|
+/// Read one complete WebSocket message off `reader`, reassembling a fragmented message from its
+/// continuation frames (RFC 6455 §5.4) and transparently handling interleaved control frames (§5.5):
+/// a ping is answered on `writer` with a pong, a pong is dropped, and a close ends the message with
+/// its code and reason. Raises `WsError` on a framing violation (a stray continuation frame, or a new
+/// data frame arriving before the current message finished).
+pub async fn ws_read_message(
+  reader : &@io.Reader,
+  writer : &@io.Writer,
+) -> WsMessage {
+  let payload = Buffer()
+  let mut kind : WsOpcode? = None
+  for ;; {
+    let frame = ws_read_frame(reader)
+    match frame.opcode {
+      Ping => writer.write(ws_encode_frame(true, Pong, frame.payload))
+      Pong => ()
+      Close =>
+        return WsClose(
+          ws_close_code(frame.payload),
+          ws_close_reason(frame.payload),
+        )
+      Text | Binary => {
+        if kind is Some(_) {
+          raise WsError("a new data frame arrived before the message finished")
+        }
+        kind = Some(frame.opcode)
+        payload.write_bytes(frame.payload)
+        if frame.fin {
+          break
+        }
+      }
+      Continuation => {
+        if kind is None {
+          raise WsError("continuation frame with no message in progress")
+        }
+        payload.write_bytes(frame.payload)
+        if frame.fin {
+          break
+        }
+      }
+    }
+  }
+  let data = payload.to_bytes()
+  if kind is Some(Binary) {
+    WsBinary(data)
+  } else {
+    WsText(data)
+  }
+}

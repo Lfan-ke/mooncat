@@ -54,6 +54,24 @@ fn split_request_line(line : String) -> (String, String, String)? {
 }
 
 ///|
+/// Whether a `Content-Length` field value is well-formed: after trimming OWS, a
+/// non-empty run of ASCII digits and nothing else. A value like `4a` or `abc` is a
+/// framing error, not a lenient zero (RFC 7230 §3.3.2 / §3.3.3).
+fn is_valid_content_length(s : String) -> Bool {
+  let t = ascii_trim(s)
+  if t.length() == 0 {
+    return false
+  }
+  for i = 0; i < t.length(); i = i + 1 {
+    let c = t[i]
+    if c < '0' || c > '9' {
+      return false
+    }
+  }
+  true
+}
+
+///|
 /// Parse a `Content-Length` field value into a non-negative `Int`, stopping at
 /// the first non-digit (lenient like a production parser's fast path).
 fn parse_content_length(s : String) -> Int {
@@ -108,7 +126,12 @@ async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
   }
   let has_content_length = headers.get("content-length") is Some(_)
   let content_length = match headers.get("content-length") {
-    Some(v) => parse_content_length(v)
+    Some(v) => {
+      // An invalid Content-Length is an unrecoverable framing error (RFC 7230 §3.3.3),
+      // not a lenient zero: reject the request rather than misframe its body.
+      guard is_valid_content_length(v) else { return None }
+      parse_content_length(v)
+    }
     None => 0
   }
   let chunked = match headers.get("transfer-encoding") {
@@ -412,6 +435,11 @@ test "http1 codec: request-line split, content-length, hex, keep-alive" {
   assert_eq(split_request_line("garbage"), None)
   assert_eq(parse_content_length(" 42 "), 42)
   assert_eq(parse_content_length("0"), 0)
+  assert_eq(is_valid_content_length(" 42 "), true)
+  assert_eq(is_valid_content_length("0"), true)
+  assert_eq(is_valid_content_length("4a"), false)
+  assert_eq(is_valid_content_length("abc"), false)
+  assert_eq(is_valid_content_length(""), false)
   assert_eq(hex_of(0), "0")
   assert_eq(hex_of(255), "ff")
   assert_eq(hex_of(4096), "1000")
@@ -644,6 +672,14 @@ async test "http1: configured server headers ride the response, unless the app s
   let resp2 = drain_pipe(resp_r2)
   assert_eq(bytes_has(resp2, b"server: myapp"), true)
   assert_eq(bytes_has(resp2, b"server: mooncat"), false)
+}
+
+///|
+async test "http1: a request with a non-numeric Content-Length is rejected" {
+  let (r, w) = @pipe.pipe()
+  w.write(b"POST /u HTTP/1.1\r\ncontent-length: 4a\r\n\r\n")
+  w.close()
+  assert_eq(parse_http1_request(r) is None, true)
 }
 
 ///|

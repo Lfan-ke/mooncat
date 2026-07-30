@@ -326,6 +326,17 @@ async fn dispatch_http1(
         sb.write_string("\{name}: \{value}\r\n")
       }
     }
+    // Signal the connection's fate unless the app already set `Connection`: a server
+    // that will close SHOULD say so (RFC 7230 §6.1), and HTTP/1.0 needs an explicit
+    // `keep-alive` since it defaults to close.
+    if !app_keys.contains("connection") {
+      let will_keep_alive = should_keep_alive(req) && !close_delimited.val
+      if !will_keep_alive {
+        sb.write_string("connection: close\r\n")
+      } else if is_http10 {
+        sb.write_string("connection: keep-alive\r\n")
+      }
+    }
     sb.write_string(extra)
     sb.to_string()
   }
@@ -450,6 +461,44 @@ fn bytes_has(hay : Bytes, needle : Bytes) -> Bool {
     i = i + 1
   }
   false
+}
+
+///|
+/// Drive `dispatch_http1` for `req` with a trivial 200 app over in-memory pipes and
+/// return the raw response bytes (test helper).
+async fn run_h1(req : Http1Request) -> Bytes {
+  let (req_r, req_w) = @pipe.pipe()
+  req_w.close()
+  let (resp_r, resp_w) = @pipe.pipe()
+  let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
+    send(
+      @moonasgi.Event::HttpResponseStart(status=200, headers=[], trailers=false),
+    )
+    send(@moonasgi.Event::HttpResponseBody(body=b"hi", more_body=false))
+  }
+  let _ = dispatch_http1(app, req, req_r, resp_w, scheme="http")
+  resp_w.close()
+  drain_pipe(resp_r)
+}
+
+///|
+async test "http1: the response signals connection close and HTTP/1.0 keep-alive" {
+  // HTTP/1.1 with Connection: close -> the response echoes connection: close.
+  let close_11 = run_h1({
+    ..h1_req("HTTP/1.1"),
+    headers: Map([("connection", "close")]),
+  })
+  assert_eq(bytes_has(close_11, b"connection: close"), true)
+  // HTTP/1.0 defaults to close -> connection: close.
+  assert_eq(bytes_has(run_h1(h1_req("HTTP/1.0")), b"connection: close"), true)
+  // HTTP/1.0 with keep-alive requested -> connection: keep-alive.
+  let ka_10 = run_h1({
+    ..h1_req("HTTP/1.0"),
+    headers: Map([("connection", "keep-alive")]),
+  })
+  assert_eq(bytes_has(ka_10, b"connection: keep-alive"), true)
+  // HTTP/1.1 defaults to keep-alive -> no connection: close header.
+  assert_eq(bytes_has(run_h1(h1_req("HTTP/1.1")), b"connection: close"), false)
 }
 
 ///|

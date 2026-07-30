@@ -423,6 +423,105 @@ test "server conn: the handshake flight is protected with ECDHE-derived keys the
 }
 
 ///|
+test "server conn: a full ECDHE handshake reaches CONNECTED" {
+  let dcid = qv_hexb("8394c8f03e515708")
+  let client_priv = qv_hexb(
+    "2333333333333333333333333333333333333333333333333333333333333333",
+  )
+  let server_priv = qv_hexb(
+    "6666666666666666666666666666666666666666666666666666666666666666",
+  )
+  let client_pub = tls13_x25519_public(client_priv)
+  let server_pub = tls13_x25519_public(server_priv)
+  // Client ClientHello with key_share, delivered over an Initial packet.
+  let ch = TlsClientHello::{
+    random: Bytes::make(32, b'\x23'),
+    session_id: b"lfanke",
+    cipher_suites: [0x1301],
+    extensions: [
+      {
+        ext_type: tls_ext_key_share,
+        data: tls_encode_key_share_client([(tls_group_x25519, client_pub)]),
+      },
+    ],
+  }
+  let ch_msg = encode_client_hello(ch)
+  let initial_keys = client_initial_keys(dcid)
+  let server = QuicServerConn::new(dcid)
+  let _ = server.receive_initial(
+    quic_send_initial(
+      1U,
+      dcid,
+      b"",
+      b"",
+      0,
+      4,
+      [Crypto(offset=0, data=ch_msg)],
+      initial_keys,
+    ),
+  )
+  // Server ServerHello with key_share; derive the handshake secret from the ECDHE.
+  let sh = TlsServerHello::{
+    random: Bytes::make(32, b'\x66'),
+    session_id: b"lfanke",
+    cipher_suite: 0x1301,
+    extensions: [tls_key_share_extension(tls_group_x25519, server_pub)],
+  }
+  let _ = server.send_server_hello(sh, b"", b"\x0a\x0b\x0c\x0d", 0)
+  let th_ch_sh = server.transcript_hash()
+  let server_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+    server_priv, client_pub, th_ch_sh, false,
+  )
+  // Server sends its Handshake flight with the derived keys.
+  let ee_body = b"ee"
+  let cert_body = b"cert"
+  let cv_body = b"cv"
+  let _ = server.send_handshake_flight(
+    server_hs_secret, ee_body, cert_body, cv_body, b"", b"\x0a\x0b\x0c\x0d", 0,
+  )
+  assert_eq(server.handshake_state(), WaitFinished)
+  // Client derives the same handshake secrets and reconstructs the transcript through the
+  // server Finished, exactly as the server holds it.
+  let client_hs_secret = tls13_ecdhe_handshake_traffic_secret(
+    client_priv, server_pub, th_ch_sh, true,
+  )
+  let sh_msg = encode_server_hello(sh)
+  let ee = tls_encode_handshake(8, ee_body)
+  let cert = tls_encode_handshake(11, cert_body)
+  let cv = tls_encode_handshake(15, cv_body)
+  let through_cv = bytes_concat(
+    bytes_concat(bytes_concat(bytes_concat(ch_msg, sh_msg), ee), cert),
+    cv,
+  )
+  let server_fin = tls_encode_handshake(
+    20,
+    tls13_finished_verify_data(server_hs_secret, sha256(through_cv)),
+  )
+  let through_server_fin = bytes_concat(through_cv, server_fin)
+  // Client sends its Finished over the shared transcript in a Handshake packet.
+  let client_fin = tls_encode_handshake(
+    20,
+    tls13_finished_verify_data(client_hs_secret, sha256(through_server_fin)),
+  )
+  let client_keys = quic_packet_keys(client_hs_secret)
+  let fin_packet = quic_send_handshake(
+    1U,
+    b"",
+    b"",
+    0,
+    4,
+    [Crypto(offset=0, data=client_fin)],
+    client_keys,
+  )
+  // The server verifies the client Finished and the handshake completes.
+  assert_eq(
+    server.receive_handshake(fin_packet, client_keys, client_hs_secret),
+    true,
+  )
+  assert_eq(server.handshake_state(), Connected)
+}
+
+///|
 test "server conn: a tampered Initial packet is rejected" {
   let dcid = qv_hexb("8394c8f03e515708")
   let keys = client_initial_keys(dcid)

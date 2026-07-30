@@ -283,10 +283,15 @@ async fn dispatch_http1(
   let started = Ref(false)
   let chunked = Ref(false)
   let ended = Ref(false)
+  // Answer with the request's HTTP version; HTTP/1.0 has no chunked transfer-encoding,
+  // so a streamed 1.0 response is framed by connection close instead.
+  let is_http10 = req.version == "HTTP/1.0"
+  let resp_version = if is_http10 { "HTTP/1.0" } else { "HTTP/1.1" }
+  let close_delimited = Ref(false)
   let head = fn(extra : String) -> String {
     let sb = StringBuilder::new()
     sb.write_string(
-      "HTTP/1.1 \{resp_status.val} \{reason(resp_status.val)}\r\n",
+      "\{resp_version} \{resp_status.val} \{reason(resp_status.val)}\r\n",
     )
     for pair in resp_headers.val {
       let kl = pair.0.to_lower()
@@ -310,6 +315,11 @@ async fn dispatch_http1(
             writer.write(head("content-length: \{body.length()}\r\n\r\n"))
             writer.write(body)
             ended.val = true
+          } else if is_http10 {
+            // No chunked on HTTP/1.0: frame the stream by closing the connection.
+            close_delimited.val = true
+            writer.write(head("\r\n"))
+            writer.write(body)
           } else {
             chunked.val = true
             writer.write(head("transfer-encoding: chunked\r\n\r\n"))
@@ -319,6 +329,11 @@ async fn dispatch_http1(
           write_chunk(writer, body)
           if !more_body {
             writer.write("0\r\n\r\n")
+            ended.val = true
+          }
+        } else if close_delimited.val {
+          writer.write(body)
+          if !more_body {
             ended.val = true
           }
         }
@@ -331,7 +346,8 @@ async fn dispatch_http1(
   } else if chunked.val && !ended.val {
     writer.write("0\r\n\r\n")
   }
-  should_keep_alive(req)
+  // A close-delimited response has no length signal, so the connection must close.
+  should_keep_alive(req) && !close_delimited.val
 }
 
 ///|
@@ -372,6 +388,88 @@ test "http1 codec: request-line split, content-length, hex, keep-alive" {
   assert_eq(should_keep_alive(ka_10), true)
   let close_10 : Http1Request = { ..ka_11, version: "HTTP/1.0" }
   assert_eq(should_keep_alive(close_10), false)
+}
+
+///|
+/// Read a (closed) pipe to its bytes — a test helper for inspecting the response a
+/// `dispatch_http1` run wrote.
+async fn drain_pipe(r : @pipe.PipeRead) -> Bytes {
+  let buf = Buffer()
+  for ;; {
+    match r.read_some() {
+      Some(chunk) => buf.write_bytes(chunk)
+      None => break
+    }
+  }
+  buf.to_bytes()
+}
+
+///|
+/// A fixed Http1Request head for driving `dispatch_http1` in tests.
+fn h1_req(version : String) -> Http1Request {
+  {
+    http_method: "GET",
+    target: "/",
+    version,
+    headers: Map([]),
+    content_length: 0,
+    chunked: false,
+    expect_continue: false,
+  }
+}
+
+///|
+async test "http1: an HTTP/1.0 request is answered with an HTTP/1.0 status line" {
+  let (req_r, req_w) = @pipe.pipe()
+  req_w.close()
+  let (resp_r, resp_w) = @pipe.pipe()
+  let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
+    send(
+      @moonasgi.Event::HttpResponseStart(status=200, headers=[], trailers=false),
+    )
+    send(@moonasgi.Event::HttpResponseBody(body=b"hi", more_body=false))
+  }
+  let keep = dispatch_http1(
+    app,
+    h1_req("HTTP/1.0"),
+    req_r,
+    resp_w,
+    scheme="http",
+  )
+  resp_w.close()
+  let resp = drain_pipe(resp_r)
+  assert_eq(resp[0:8].to_owned() == b"HTTP/1.0", true)
+  // HTTP/1.0 defaults to closing the connection.
+  assert_eq(keep, false)
+}
+
+///|
+async test "http1: a streamed HTTP/1.0 response is close-delimited, not chunked" {
+  let (req_r, req_w) = @pipe.pipe()
+  req_w.close()
+  let (resp_r, resp_w) = @pipe.pipe()
+  let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
+    send(
+      @moonasgi.Event::HttpResponseStart(status=200, headers=[], trailers=false),
+    )
+    send(@moonasgi.Event::HttpResponseBody(body=b"part1", more_body=true))
+    send(@moonasgi.Event::HttpResponseBody(body=b"part2", more_body=false))
+  }
+  let keep = dispatch_http1(
+    app,
+    h1_req("HTTP/1.0"),
+    req_r,
+    resp_w,
+    scheme="http",
+  )
+  resp_w.close()
+  let resp = drain_pipe(resp_r)
+  let n = resp.length()
+  // HTTP/1.0 has no chunked, so the body is written raw and the response ends with the
+  // last body part, not a "0\r\n\r\n" chunk terminator.
+  assert_eq(resp[n - 5:n].to_owned() == b"part2", true)
+  // Close-delimited framing forces the connection closed.
+  assert_eq(keep, false)
 }
 
 ///|

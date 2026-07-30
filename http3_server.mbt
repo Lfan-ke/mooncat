@@ -47,6 +47,21 @@ pub fn http3_parse_request(
 }
 
 ///|
+/// Parse a request stream, rejecting any frame the protocol does not allow on a request stream
+/// (RFC 9114 §7.2): a control-only frame such as SETTINGS is an H3_FRAME_UNEXPECTED connection error
+/// here, not silently ignored. Otherwise as `http3_parse_request` — `None` when the required
+/// `:method` / `:path` are absent. This is the request path with frame-placement validation applied.
+pub fn http3_parse_request_strict(
+  bytes : Bytes,
+) -> Http3Request? raise Http3FrameError {
+  let (frames, _) = http3_frame_decode_all(bytes)
+  for frame in frames {
+    http3_check_frame(frame, RequestCtx)
+  }
+  http3_parse_request(bytes)
+}
+
+///|
 /// An HTTP/3 response: the status, the header fields, and the body.
 pub(all) struct Http3Response {
   status : String

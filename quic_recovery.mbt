@@ -15,6 +15,17 @@ pub struct QuicRecovery {
   max_ack_delay : Int64
   granularity : Int64
   packet_threshold : Int64
+  mut pto_count : Int
+  mut last_sent_time : Int64
+}
+
+///|
+fn recovery_pow2(n : Int) -> Int64 {
+  let mut r = 1L
+  for _i = 0; _i < n; _i = _i + 1 {
+    r = r * 2L
+  }
+  r
 }
 
 ///|
@@ -33,6 +44,8 @@ pub fn QuicRecovery::new(
     max_ack_delay,
     granularity,
     packet_threshold: 3L,
+    pto_count: 0,
+    last_sent_time: -1L,
   }
 }
 
@@ -47,6 +60,7 @@ pub fn QuicRecovery::on_packet_sent(
 ) -> Unit {
   self.tracker.on_sent(pn, now, size)
   self.cc.on_sent(size)
+  self.last_sent_time = now
 }
 
 ///|
@@ -75,6 +89,9 @@ pub fn QuicRecovery::on_ack_received(
   let sample_time = self.tracker.time_of(largest)
   let acked_bytes = self.tracker.on_ack_ranges(ranges)
   self.cc.on_ack(acked_bytes)
+  if acked_bytes > 0L {
+    self.pto_count = 0
+  }
   match sample_time {
     Some(ts) =>
       if largest > prev_largest {
@@ -125,6 +142,31 @@ pub fn QuicRecovery::smoothed_rtt(self : QuicRecovery) -> Int64 {
 /// The probe timeout (microseconds).
 pub fn QuicRecovery::pto(self : QuicRecovery) -> Int64 {
   self.rtt.pto(self.max_ack_delay, self.granularity)
+}
+
+///|
+/// The number of consecutive probe timeouts without an acknowledgement (the backoff exponent).
+pub fn QuicRecovery::pto_count(self : QuicRecovery) -> Int {
+  self.pto_count
+}
+
+///|
+/// The time (microseconds) at which the probe timeout fires, armed from the last ack-eliciting
+/// packet sent and backed off by `2^pto_count` (RFC 9002 §6.2.1). `None` when nothing is
+/// outstanding — the timer is disarmed.
+pub fn QuicRecovery::pto_deadline(self : QuicRecovery) -> Int64? {
+  if self.tracker.outstanding().length() == 0 {
+    None
+  } else {
+    Some(self.last_sent_time + self.pto() * recovery_pow2(self.pto_count))
+  }
+}
+
+///|
+/// Handle a probe timeout (RFC 9002 §6.2.4): back off the timer for the next arming. The caller
+/// sends probe packets — retransmitting outstanding frames or new data.
+pub fn QuicRecovery::on_pto(self : QuicRecovery) -> Unit {
+  self.pto_count = self.pto_count + 1
 }
 
 ///|

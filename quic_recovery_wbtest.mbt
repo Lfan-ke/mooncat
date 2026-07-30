@@ -40,6 +40,23 @@ test "recovery: an ACK detects loss by both thresholds and halves the window onc
 }
 
 ///|
+test "recovery: the PTO timer arms from the last send, backs off, and resets on acknowledgement (§6.2)" {
+  let rec = QuicRecovery::new(1200L, 25000L, 1000L)
+  // No RTT sample yet: pto = 0 + max(4·0, granularity 1000) + max_ack_delay 25000 = 26000.
+  rec.on_packet_sent(0L, 1000L, 1200L)
+  assert_eq(rec.pto_deadline(), Some(27000L)) // 1000 + 26000
+  // A probe timeout backs the timer off by 2×.
+  rec.on_pto()
+  assert_eq(rec.pto_count(), 1)
+  assert_eq(rec.pto_deadline(), Some(53000L)) // 1000 + 26000·2
+  // An ACK that newly acknowledges resets the backoff and disarms the timer.
+  let ack : QuicFrame = Ack(largest=0UL, delay=0UL, first_range=0UL, ranges=[])
+  let _ = rec.on_ack_received(ack, 1100L, 0L)
+  assert_eq(rec.pto_count(), 0)
+  assert_eq(rec.pto_deadline(), None)
+}
+
+///|
 test "recovery: can_send tracks the window against bytes in flight" {
   let rec = QuicRecovery::new(1200L, 25000L, 1000L) // window 12000
   assert_eq(rec.can_send(1200L), true)

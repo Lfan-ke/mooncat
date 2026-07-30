@@ -125,6 +125,54 @@ pub fn QuicServerConn::send_handshake_flight(
 }
 
 ///|
+/// Send the server's Handshake-space flight with a real CertificateVerify (RFC 8446 §4.4.3):
+/// like `send_handshake_flight`, but instead of taking the CertificateVerify body it signs the
+/// transcript through the Certificate with the certificate's ES256 key. Encode
+/// EncryptedExtensions and Certificate, fold them, sign the transcript hash then standing (the
+/// hash through the Certificate) into the CertificateVerify body, fold it, then the server
+/// Finished. A peer holding the certificate's public key can verify the signature and
+/// authenticate the server — the real handshake flight, no placeholder CertificateVerify.
+pub fn QuicServerConn::send_handshake_flight_signed(
+  self : QuicServerConn,
+  server_hs_secret : Bytes,
+  encrypted_extensions : Bytes,
+  certificate : Bytes,
+  signing_key : EcdsaPrivateKey,
+  out_dcid : Bytes,
+  out_scid : Bytes,
+  pn : Int64,
+) -> Bytes raise {
+  let ee = tls_encode_handshake(8, encrypted_extensions)
+  let cert = tls_encode_handshake(11, certificate)
+  self.handshake.record_sent(ee)
+  self.handshake.record_sent(cert)
+  let cv_body = tls13_certificate_verify_sign(
+    signing_key,
+    tls13_cv_context_server,
+    self.handshake.transcript_hash(),
+  )
+  let cv = tls_encode_handshake(15, cv_body)
+  self.handshake.record_sent(cv)
+  let verify_data = tls13_finished_verify_data(
+    server_hs_secret,
+    self.handshake.transcript_hash(),
+  )
+  let fin = tls_encode_handshake(20, verify_data)
+  self.handshake.record_sent(fin)
+  self.handshake.sent_flight(false)
+  let crypto = bytes_concat(bytes_concat(bytes_concat(ee, cert), cv), fin)
+  quic_send_handshake(
+    1U,
+    out_dcid,
+    out_scid,
+    pn,
+    4,
+    [Crypto(offset=0, data=crypto)],
+    quic_packet_keys(server_hs_secret),
+  )
+}
+
+///|
 /// Receive a client Initial packet: unprotect it, record its number for acknowledgement,
 /// reassemble its CRYPTO frames, and drive the handshake with the contiguous handshake
 /// bytes. Returns the handshake message types processed. Raises if the packet fails to

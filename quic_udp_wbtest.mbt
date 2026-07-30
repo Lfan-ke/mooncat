@@ -61,3 +61,69 @@ async test "quic over udp: a real Initial packet with a ClientHello drives the s
     server_ep.close()
   })
 }
+
+///|
+async test "quic over udp: client ClientHello and server ServerHello complete an Initial flight over the wire" {
+  @async.with_task_group(g => {
+    let dcid = qv_hexb("8394c8f03e515708")
+    let server_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let server_addr = server_ep.local_addr()
+    let server_conn = QuicServerConn::new(dcid)
+    // Server task: receive the ClientHello, then send back a protected ServerHello Initial
+    // packet to the client's address.
+    let _ = g.spawn(() => {
+      let (datagram, client_addr) = server_ep.recv_datagram()
+      let _ = server_conn.receive_initial(datagram) catch { _ => [] }
+      let sh = TlsServerHello::{
+        random: Bytes::make(32, b'\xab'),
+        session_id: b"",
+        cipher_suite: 0x1301,
+        extensions: [],
+      }
+      let sh_packet = server_conn.send_server_hello(
+        sh, b"", b"\x01\x02\x03\x04", 0,
+      )
+      server_ep.send_datagram(sh_packet, client_addr)
+    })
+    @async.sleep(100)
+    let client_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
+    let keys = client_initial_keys(dcid)
+    let initial = quic_send_initial(
+      1U,
+      dcid,
+      b"",
+      b"",
+      0,
+      4,
+      [Crypto(offset=0, data=tls_encode_handshake(1, b"ch"))],
+      keys,
+    )
+    client_ep.send_datagram(initial, server_addr)
+    // Receive the server's ServerHello Initial packet and decode it.
+    let (sh_datagram, _) = client_ep.recv_datagram()
+    let decoded = match quic_recv_initial(sh_datagram, keys) {
+      Some((frames, _)) => {
+        let mut result : TlsServerHello? = None
+        for frame in frames {
+          match frame {
+            Crypto(data~, ..) =>
+              match tls_parse_handshake(data[:]) {
+                Some((2, body)) => result = decode_server_hello(body[:])
+                _ => ()
+              }
+            _ => ()
+          }
+        }
+        result
+      }
+      None => None
+    }
+    match decoded {
+      Some(sh) => assert_eq(sh.cipher_suite, 0x1301)
+      None =>
+        abort("client did not receive a decodable ServerHello over the wire")
+    }
+    client_ep.close()
+    server_ep.close()
+  })
+}

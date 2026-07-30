@@ -22,7 +22,7 @@ pub(all) struct Http3Settings {
   qpack_max_table_capacity : UInt64
   max_field_section_size : UInt64
   qpack_blocked_streams : UInt64
-}
+} derive(Eq, Debug)
 
 ///|
 /// Settings with the given QPACK table capacity, maximum field section size, and blocked-stream

@@ -28,4 +28,9 @@ import {
 // its own suite drives HTTPS through it. Opt in to that alert so mooncat can
 // serve HTTPS; the single opt-in is documented in README §TLS and tls.mbt.
 
-warnings = "-alert_internal"
+// -29 (unused_package): `moonbitlang/async/fs` is used only by `process_reload.native.mbt` (the
+// native-only `--reload` watcher, whose `@fs.Watcher` has no wasm/js backend), so on the non-native
+// targets the import reads as unused. It is genuinely needed on native; suppress the cross-target
+// false positive rather than drop a real dependency.
+
+warnings = "-alert_internal-29"

@@ -28,7 +28,9 @@ test "ack: to_ack_fields and ack_fields_to_ranges round-trip" {
   for pn in [0, 1, 2, 4, 5, 7] {
     set.add(pn.to_uint64())
   }
-  guard set.to_ack_fields() is Some((largest, first_range, pairs))
+  guard set.to_ack_fields() is Some((largest, first_range, pairs)) else {
+    fail("to_ack_fields should be Some for this ack set")
+  }
   assert_eq(ack_fields_to_ranges(largest, first_range, pairs), [
     (0, 2),
     (4, 5),
@@ -42,7 +44,9 @@ test "ack: fields survive the ACK frame codec (encode then parse)" {
   for pn in [10, 11, 12, 20] {
     set.add(pn.to_uint64())
   }
-  guard set.to_ack_fields() is Some((largest, first_range, pairs))
+  guard set.to_ack_fields() is Some((largest, first_range, pairs)) else {
+    fail("to_ack_fields should be Some for this ack set")
+  }
   let frame : QuicFrame = Ack(largest~, delay=42, first_range~, ranges=pairs)
   match parse_frame(encode_frame(frame)[:]) {
     Some((decoded, _)) => assert_eq(decoded, frame)
@@ -71,7 +75,9 @@ test "ack: a single packet and a contiguous run" {
   for pn in [3, 4, 5, 6] {
     run.add(pn.to_uint64())
   }
-  guard run.to_ack_fields() is Some((largest, first_range, pairs))
+  guard run.to_ack_fields() is Some((largest, first_range, pairs)) else {
+    fail("to_ack_fields should be Some for this ack set")
+  }
   assert_eq((largest, first_range), (6, 3))
   assert_eq(pairs, [])
 }
@@ -83,7 +89,9 @@ test "ack: out-of-order and duplicate additions coalesce" {
     // 3..7 with a duplicate 3, arriving out of order
     set.add(pn.to_uint64())
   }
-  guard set.to_ack_fields() is Some((largest, first_range, pairs))
+  guard set.to_ack_fields() is Some((largest, first_range, pairs)) else {
+    fail("to_ack_fields should be Some for this ack set")
+  }
   assert_eq((largest, first_range), (7, 4)) // 3..7 is one range
   assert_eq(pairs, [])
 }

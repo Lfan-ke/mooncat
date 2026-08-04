@@ -1,0 +1,7 @@
+import {
+  "Lfan-ke/mooncat",
+  "Lfan-ke/moonasgi",
+  "Lfan-ke/moonrpc",
+}
+
+pkgtype(kind: "executable")

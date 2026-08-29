@@ -6,38 +6,35 @@ import re, html, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SECTIONS = [
-    ("serve", "server.mbt", "Serving",
-     "The accept loop that turns each native HTTP/1.1 connection into a Scope / "
-     "Receive / Send and drives your moonasgi app — with the lifespan protocol run "
-     "around it and WebSocket upgrades diverted to the frame bridge."),
-    ("websocket", "websocket.mbt", "WebSocket bridge",
-     "The frame&#8596;Event bridge that drives a websocket Scope through the SEAM: "
-     "connect / accept / receive (text & binary) / send / disconnect / close, with "
-     "subprotocol parsing and protocol-layer ping/pong."),
-    ("config", "config.mbt", "Configuration",
-     "The Config record (← uvicorn Config): bind address, backlog, and the HTTP/1.1 "
-     "transport knobs the async server honours — dual-stack, reuse-addr, server "
-     "headers, connection ceiling, failure isolation."),
-    ("lifespan", "lifespan.mbt", "Lifespan",
-     "The ASGI lifespan driver (← uvicorn LifespanOn): startup is driven before the "
-     "listener binds and shutdown on the way out, even under cancellation."),
-    ("tls", "tls.mbt", "HTTPS / TLS",
-     "Serving HTTP/1.1 over TLS (← uvicorn --ssl-certfile/--ssl-keyfile): a self-built "
-     "HTTP/1.1 codec drives the moonasgi app over a @tls.Tls stream, with certificate "
-     "material given as PEM (OpenSSL platforms) or PKCS#12 (Windows)."),
-    ("http2", "http2.mbt", "HTTP/2 (h2c)",
-     "Serving the same moonasgi app over HTTP/2 cleartext (h2c), reusing moonrpc's "
-     "self-built HTTP/2 frame layer and HPACK engine: it reads the client preface + "
-     "SETTINGS, decodes request HEADERS into a Scope, streams DATA as the receive "
-     "body, and encodes the response HEADERS + DATA back under connection- and "
-     "stream-level flow control."),
-    ("process", "process_model.mbt", "Process model",
-     "The uvicorn process model: a graceful shutdown that stops accepting, drains "
-     "in-flight requests, runs lifespan shutdown, then closes the listener, plus a "
-     "--reload file watcher. The graceful acceptor drives the same request path as "
-     "serve over a real ServerConnection, so WebSocket upgrades work here too. "
-     "Multi-worker prefork is bounded by the async transport — one acceptor, "
-     "concurrent per-connection handlers."),
+    ("serve", ('server.native.mbt', 'http1.native.mbt', 'config.mbt', 'lifespan.mbt', 'process_model.native.mbt', 'process_reload.native.mbt'), "Serving",
+     "The accept loop that turns each connection into a Scope / Receive / Send and "
+     "drives your moonasgi app: the Config record uvicorn's settings map onto, the "
+     "lifespan protocol run around the listener, the graceful shutdown path that "
+     "drains in flight requests before it closes, and the reload watcher."),
+    ("websocket", ('websocket.native.mbt', 'websocket_frame.mbt', 'websocket_handshake.mbt', 'websocket_serve.native.mbt'), "WebSocket",
+     "The frame-to-Event bridge that drives a websocket Scope through the SEAM: "
+     "connect / accept / receive / send / disconnect / close, the RFC 6455 frame "
+     "codec underneath it, and the upgrade handshake."),
+    ("http2", ("http2.native.mbt",), "HTTP/2 (h2c)",
+     "Serving HTTP/2 over cleartext: the connection preface, frame pump and stream "
+     "multiplexing, over the same dispatch path HTTP/1.1 uses."),
+    ("tls", ('tls13.mbt', 'tls13_alpn.mbt', 'tls13_certificate.mbt', 'tls13_certificate_verify.mbt', 'tls13_client_state.mbt', 'tls13_ecdhe.mbt', 'tls13_encrypted_extensions.mbt', 'tls13_handshake_driver.mbt', 'tls13_key_share.mbt', 'tls13_quic_params.mbt', 'tls13_server_state.mbt', 'tls13_transcript.mbt', 'tls_handshake.mbt', 'tls.native.mbt', 'x509.mbt', 'asn1.mbt'), "TLS 1.3",
+     "A TLS 1.3 stack written here rather than bound: the client and server state "
+     "machines, key schedule and transcript, ECDHE key share, ALPN, certificate and "
+     "CertificateVerify, the QUIC transport-parameters extension, plus the X.509 and "
+     "DER parsing they rest on."),
+    ("quic", ('quic_ack.mbt', 'quic_app_packet.mbt', 'quic_congestion.mbt', 'quic_conn.mbt', 'quic_flow.mbt', 'quic_frame.mbt', 'quic_handshake_packet.mbt', 'quic_hp.mbt', 'quic_hs_keys.mbt', 'quic_initial.mbt', 'quic_initial_conn.mbt', 'quic_initial_packet.mbt', 'quic_keys.mbt', 'quic_loss.mbt', 'quic_packet_header.mbt', 'quic_packet_number.mbt', 'quic_payload.mbt', 'quic_pn_space.mbt', 'quic_reassembly.mbt', 'quic_recovery.mbt', 'quic_retry.mbt', 'quic_rtt.mbt', 'quic_send_flow.mbt', 'quic_sender.mbt', 'quic_server_conn.mbt', 'quic_short_header.mbt', 'quic_stream_id.mbt', 'quic_stream_mgr.mbt', 'quic_stream_sched.mbt', 'quic_stream_state.mbt', 'quic_transport_params.mbt', 'quic_udp.native.mbt', 'quic_varint.mbt'), "QUIC",
+     "RFC 9000/9001 from the packet up: header protection, packet-number spaces, "
+     "initial and handshake keys, frames, streams and their scheduler, flow control, "
+     "loss recovery, congestion control, RTT estimation, retry, and the connection "
+     "state machines on both ends."),
+    ("http3", ('http3_conn.mbt', 'http3_frame.mbt', 'http3_frame_validation.mbt', 'http3_message.mbt', 'http3_server.mbt', 'http3_settings.mbt', 'http3_stream.mbt', 'qpack_dynamic_table.mbt', 'qpack_encode_dynamic.mbt', 'qpack_field.mbt', 'qpack_field_dynamic.mbt', 'qpack_instructions.mbt', 'qpack_int.mbt', 'qpack_section_prefix.mbt', 'qpack_static.mbt'), "HTTP/3 and QPACK",
+     "RFC 9114 framing, settings and the request/response message model over QUIC "
+     "streams, with the RFC 9204 QPACK codec: static and dynamic tables, field "
+     "encoding, encoder/decoder instructions and section prefixes."),
+    ("crypto", ('aes.mbt', 'gcm.mbt', 'sha1.mbt', 'sha256.mbt', 'hmac.mbt', 'hkdf.mbt', 'x25519.mbt', 'ecdsa.mbt', 'base64.mbt'), "Primitives",
+     "The cryptography the transports need: AES and GCM, SHA-1 and SHA-256, HMAC and "
+     "HKDF, X25519, ECDSA, and base64."),
 ]
 
 KIND = {"struct": "struct", "enum": "enum", "fn": "fn", "type": "type", "let": "let"}
@@ -253,7 +250,8 @@ def main():
     for sid, rel, title, desc in SECTIONS:
         body.append('<section class="pkg" id="%s"><h2><span class="at">§</span>%s</h2>'
                     '<p class="pdesc">%s</p>' % (sid, title, desc))
-        for kind, sig, doc in parse(ROOT / rel):
+        files = rel if isinstance(rel, tuple) else (rel,)
+        for kind, sig, doc in [it for f in files for it in parse(ROOT / f)]:
             total += 1
             body.append('<div class="item" data-k="%s"><span class="kind">%s</span>'
                         '<pre class="sig">%s</pre>%s</div>'

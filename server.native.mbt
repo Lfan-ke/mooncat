@@ -167,8 +167,13 @@ async fn dispatch(
       Some(a) => Some(addr_pair(a))
       None => None
     },
+    // ASGI lets `server` carry no port (a unix socket has none), so the pair's
+    // second half is optional there while `client`'s is not.
     server: match server_addr {
-      Some(a) => Some(addr_pair(a))
+      Some(a) => {
+        let (host, port) = addr_pair(a)
+        Some((host, Some(port)))
+      }
       None => None
     },
     asgi: @moonasgi.AsgiVersion::http(),
@@ -473,7 +478,8 @@ async test "the request scope carries the peer, the bind address, and a decoded 
           )
           seen.push(
             match hs.server {
-              Some((host, port)) => host + ":" + port.to_string()
+              Some((host, Some(port))) => host + ":" + port.to_string()
+              Some((host, None)) => host
               None => "no-server"
             },
           )

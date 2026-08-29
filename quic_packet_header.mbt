@@ -104,5 +104,5 @@ pub fn parse_long_header(b : BytesView) -> (QuicLongHeader, Int)? {
   }
   let scid = b[off:off + scil].to_owned()
   off = off + scil
-  Some(({ packet_type, type_specific, version, dcid, scid }, off))
+  Some(({ packet_type, type_specific, version, dcid, scid, }, off))
 }

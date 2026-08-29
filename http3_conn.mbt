@@ -48,7 +48,7 @@ pub fn Http3Conn::new(
   role : Http3Role,
   local_settings : Http3Settings,
 ) -> Http3Conn {
-  { role, local_settings, peer_settings: None, control_seen: false }
+  { role, local_settings, peer_settings: None, control_seen: false, }
 }
 
 ///|

@@ -25,7 +25,7 @@ pub struct SentPacketTracker {
 ///|
 /// A fresh tracker with nothing outstanding.
 pub fn SentPacketTracker::new() -> SentPacketTracker {
-  { outstanding: [], largest_acked: -1L }
+  { outstanding: [], largest_acked: -1L, }
 }
 
 ///|
@@ -47,7 +47,7 @@ pub fn SentPacketTracker::on_sent(
   time_sent : Int64,
   size : Int64,
 ) -> Unit {
-  self.outstanding.push({ pn, time_sent, size })
+  self.outstanding.push({ pn, time_sent, size, })
 }
 
 ///|

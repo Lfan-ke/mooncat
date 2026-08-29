@@ -17,7 +17,7 @@ async test "quic send loop over udp: QuicSender streams data through 1-RTT packe
     let payload = b"hello-quic-send-loop!" // 21 bytes → three 8/8/5 frames at max_frame 8
     let receiver_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
     let receiver_addr = receiver_ep.local_addr()
-    let reassembled : Ref[Bytes] = { val: b"" }
+    let reassembled : Ref[Bytes] = { val: b"", }
     // Receiver: take three data packets, reassemble the stream, and send one ACK back.
     let _ = g.spawn(() => {
       let reasm = StreamReassembler::new()
@@ -124,7 +124,7 @@ async test "quic send loop over udp: a probe timeout retransmits over the wire a
     let payload = b"probe!!" // 7 bytes → one STREAM frame at max_frame 8
     let receiver_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
     let receiver_addr = receiver_ep.local_addr()
-    let reassembled : Ref[Bytes] = { val: b"" }
+    let reassembled : Ref[Bytes] = { val: b"", }
     // Receiver: the first packet's ACK is "lost" — it is received but never acknowledged. Only the
     // probe (second packet) is reassembled and acknowledged.
     let _ = g.spawn(() => {

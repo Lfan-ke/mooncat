@@ -14,7 +14,7 @@ pub struct AckRangeSet {
 ///|
 /// An empty set (nothing received yet).
 pub fn AckRangeSet::new() -> AckRangeSet {
-  { ranges: [] }
+  { ranges: [], }
 }
 
 ///|

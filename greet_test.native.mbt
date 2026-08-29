@@ -20,7 +20,10 @@ async test "greet: mooncat serves a moonapi app answering a real HTTP GET" {
         Some(n) => n
         None => "world"
       }
-      @moonapi.json(200, ({ message: "hello \{name}" } : Greeting).to_json())
+      @moonapi.json(
+        200,
+        ToJson::to_json(({ message: "hello \{name}", } : Greeting)),
+      )
     })
     let app = api.to_asgi()
     let task = g.spawn(() => serve(app, port=18095))

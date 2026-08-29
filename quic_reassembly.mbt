@@ -28,7 +28,7 @@ pub struct StreamReassembler {
 ///|
 /// A fresh reassembler positioned at the start of the stream.
 pub fn StreamReassembler::new() -> StreamReassembler {
-  { consumed: 0, intervals: [], final_size: None }
+  { consumed: 0, intervals: [], final_size: None, }
 }
 
 ///|

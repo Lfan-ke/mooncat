@@ -38,7 +38,7 @@ async fn main {
 ///|
 /// Join log entries with an arrow so the ordered protocol reads left to right.
 fn join(a : Array[String]) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < a.length(); i = i + 1 {
     if i > 0 {
       sb.write_string(" -> ")

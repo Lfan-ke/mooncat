@@ -179,34 +179,15 @@ pub async fn serve_config(app : @moonasgi.AsgiApp, config : Config) -> Unit {
       reuse_addr=config.reuse_addr,
       headers=config.server_headers,
     )
-    try
-      server.run_forever(
-        (request, body_reader, conn) => {
-          dispatch(app, request, body_reader, conn)
-        },
-        allow_failure=config.allow_failure,
-        max_connections?=config.max_connections,
-      )
-    catch {
-      err => {
-        @async.protect_from_cancel(() => {
-          lifespan.shutdown(task) catch {
-            _ => ()
-          }
-        })
-        server.close()
-        raise err
-      }
-    } noraise {
-      _ => {
-        @async.protect_from_cancel(() => {
-          lifespan.shutdown(task) catch {
-            _ => ()
-          }
-        })
-        server.close()
-      }
+    defer {
+      @async.protect_from_cancel(() => lifespan.shutdown(task) catch { _ => () })
+      server.close()
     }
+    server.run_forever(
+      (request, body_reader, conn) => dispatch(app, request, body_reader, conn),
+      allow_failure=config.allow_failure,
+      max_connections?=config.max_connections,
+    )
   })
 }
 

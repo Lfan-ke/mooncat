@@ -23,13 +23,13 @@ async fn h2c_request(
   conn.write(@moonrpc.Frame::Settings(params=[], ack=false).encode())
   let enc = @moonrpc.HpackEncoder::new()
   let hdrs : Array[@moonrpc.Header] = [
-    { name: b":method", value: h2_str_to_bytes(verb) },
-    { name: b":scheme", value: b"http" },
-    { name: b":path", value: h2_str_to_bytes(path) },
-    { name: b":authority", value: h2_str_to_bytes(host) },
+    { name: b":method", value: h2_str_to_bytes(verb), },
+    { name: b":scheme", value: b"http", },
+    { name: b":path", value: h2_str_to_bytes(path), },
+    { name: b":authority", value: h2_str_to_bytes(host), },
   ]
   for e in extra_headers {
-    hdrs.push({ name: e.0, value: e.1 })
+    hdrs.push({ name: e.0, value: e.1, })
   }
   let block = enc.encode(hdrs)
   let has_body = body.length() > 0
@@ -212,10 +212,10 @@ async test "h2c: a large response is clamped to the peer's small stream window" 
     )
     let enc = @moonrpc.HpackEncoder::new()
     let block = enc.encode([
-      { name: b":method", value: b"GET" },
-      { name: b":scheme", value: b"http" },
-      { name: b":path", value: b"/big" },
-      { name: b":authority", value: b"127.0.0.1" },
+      { name: b":method", value: b"GET", },
+      { name: b":scheme", value: b"http", },
+      { name: b":path", value: b"/big", },
+      { name: b":authority", value: b"127.0.0.1", },
     ])
     conn.write(
       @moonrpc.Frame::Headers(
@@ -298,10 +298,10 @@ async test "h2c: two streams multiplex on one connection and each gets its reply
     let enc = @moonrpc.HpackEncoder::new()
     let mk = (sid : Int, path : Bytes) => {
       let block = enc.encode([
-        { name: b":method", value: b"GET" },
-        { name: b":scheme", value: b"http" },
-        { name: b":path", value: path },
-        { name: b":authority", value: b"127.0.0.1" },
+        { name: b":method", value: b"GET", },
+        { name: b":scheme", value: b"http", },
+        { name: b":path", value: path, },
+        { name: b":authority", value: b"127.0.0.1", },
       ])
       conn.write(
         @moonrpc.Frame::Headers(

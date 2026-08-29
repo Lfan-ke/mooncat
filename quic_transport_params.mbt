@@ -53,7 +53,7 @@ pub(all) struct TransportParam {
 ///|
 /// A transport parameter whose value is a single varint integer (RFC 9000 §18.2).
 pub fn transport_param_int(id : UInt64, value : UInt64) -> TransportParam {
-  { id, value: quic_varint_encode(value) }
+  { id, value: quic_varint_encode(value), }
 }
 
 ///|
@@ -96,7 +96,7 @@ pub fn decode_transport_params(b : BytesView) -> Array[TransportParam]? {
     if b.length() < off + n {
       return None
     }
-    out.push({ id, value: b[off:off + n].to_owned() })
+    out.push({ id, value: b[off:off + n].to_owned(), })
     off = off + n
   }
   Some(out)

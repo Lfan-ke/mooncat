@@ -21,12 +21,12 @@ async test "quic http3 connection: handshake then serve a request on one connect
     let server_addr = server_ep.local_addr()
     let server_conn = QuicServerConn::new(dcid)
     let client_cid = qv_hexb("66778899eeff0011")
-    let connected : Ref[Bool] = { val: false }
+    let connected : Ref[Bool] = { val: false, }
     let handler = fn(r : Http3Request) -> Http3Response {
       if r.path == "/hello" {
-        Http3Response::{ status: "200", headers: [], body: b"one connection" }
+        Http3Response::{ status: "200", headers: [], body: b"one connection", }
       } else {
-        Http3Response::{ status: "404", headers: [], body: b"" }
+        Http3Response::{ status: "404", headers: [], body: b"", }
       }
     }
     // Server: run the handshake to Connected, derive the 1-RTT keys, then serve one request.

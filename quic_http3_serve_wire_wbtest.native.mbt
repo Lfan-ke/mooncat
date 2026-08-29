@@ -24,7 +24,7 @@ async test "quic http3 serve over udp: the server routes a request through a han
           body: b"served by mooncat h3",
         }
       } else {
-        Http3Response::{ status: "404", headers: [], body: b"" }
+        Http3Response::{ status: "404", headers: [], body: b"", }
       }
     }
     // Server: take the request off stream 0, route it, and send the response stream back.

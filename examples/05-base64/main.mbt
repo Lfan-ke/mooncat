@@ -16,7 +16,7 @@ fn main {
 ///|
 /// Interpret an ASCII byte string as text.
 fn ascii(b : Bytes) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < b.length(); i = i + 1 {
     sb.write_char(b[i].to_int().unsafe_to_char())
   }
@@ -26,7 +26,7 @@ fn ascii(b : Bytes) -> String {
 ///|
 /// Right-pad to a fixed width so the arrows line up.
 fn pad(s : String) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   sb.write_string(s)
   for _i = s.length(); _i < 8; _i = _i + 1 {
     sb.write_char(' ')

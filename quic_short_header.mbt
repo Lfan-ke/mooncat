@@ -52,5 +52,5 @@ pub fn parse_short_header(
   let key_phase = (first & 0x04) != 0
   let pn_length = (first & 0x03) + 1
   let dcid = b[1:1 + dcid_len].to_owned()
-  Some(({ spin, key_phase, pn_length, dcid }, 1 + dcid_len))
+  Some(({ spin, key_phase, pn_length, dcid, }, 1 + dcid_len))
 }

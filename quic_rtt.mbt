@@ -18,7 +18,7 @@ pub struct RttEstimator {
 ///|
 /// A fresh estimator with no samples yet.
 pub fn RttEstimator::new() -> RttEstimator {
-  { latest_rtt: 0, min_rtt: 0, smoothed_rtt: 0, rttvar: 0, has_sample: false }
+  { latest_rtt: 0, min_rtt: 0, smoothed_rtt: 0, rttvar: 0, has_sample: false, }
 }
 
 ///|

@@ -30,7 +30,7 @@ async test "quic over udp: a real Initial packet with a ClientHello drives the s
     let server_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
     let server_addr = server_ep.local_addr()
     let server_conn = QuicServerConn::new(dcid)
-    let processed : Ref[Array[Int]] = { val: [] }
+    let processed : Ref[Array[Int]] = { val: [], }
     // Server task: receive one datagram and drive the handshake with it.
     let _ = g.spawn(() => {
       let (datagram, _from) = server_ep.recv_datagram()
@@ -178,7 +178,7 @@ async test "quic over udp: a full TLS 1.3 ECDHE handshake reaches CONNECTED over
     let server_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
     let server_addr = server_ep.local_addr()
     let server_conn = QuicServerConn::new(dcid)
-    let connected : Ref[Bool] = { val: false }
+    let connected : Ref[Bool] = { val: false, }
     // The server: receive the ClientHello, reply with a ServerHello then its Handshake flight
     // (protected with keys it derives from the wire ClientHello), then verify the client
     // Finished — every flight crossing a real UDP socket.

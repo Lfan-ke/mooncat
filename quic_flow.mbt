@@ -23,7 +23,7 @@ pub struct SendFlow {
 ///|
 /// A send window with the peer's initial maximum.
 pub fn SendFlow::new(initial_max : UInt64) -> SendFlow {
-  { sent: 0, limit: initial_max }
+  { sent: 0, limit: initial_max, }
 }
 
 ///|
@@ -83,7 +83,7 @@ pub struct RecvFlow {
 ///|
 /// A receive window of `window` bytes (the initial advertised limit).
 pub fn RecvFlow::new(window : UInt64) -> RecvFlow {
-  { received: 0, consumed: 0, limit: window, window }
+  { received: 0, consumed: 0, limit: window, window, }
 }
 
 ///|

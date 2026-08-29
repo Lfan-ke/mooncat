@@ -34,7 +34,7 @@ async test "quic over udp: an HTTP/3 request and response round-trip over QUIC S
     let client_cid = qv_hexb("66778899eeff0011")
     let server_ep = QuicUdpEndpoint::bind("127.0.0.1:0")
     let server_addr = server_ep.local_addr()
-    let request_ok : Ref[Bool] = { val: false }
+    let request_ok : Ref[Bool] = { val: false, }
     // The server: receive the client's 1-RTT packet, unprotect it with the client application
     // keys, take the request off stream 0, decode it, and answer with its own 1-RTT packet
     // protected with the server application keys.

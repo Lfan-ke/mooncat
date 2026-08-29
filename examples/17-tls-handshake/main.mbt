@@ -53,7 +53,7 @@ fn cat(a : Bytes, b : Bytes) -> Bytes {
 
 ///|
 fn ints(a : Array[Int]) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   sb.write_char('[')
   for i = 0; i < a.length(); i = i + 1 {
     if i > 0 {

@@ -32,7 +32,7 @@ pub fn Http3Settings::new(
   max_field_section_size : UInt64,
   qpack_blocked_streams : UInt64,
 ) -> Http3Settings {
-  { qpack_max_table_capacity, max_field_section_size, qpack_blocked_streams }
+  { qpack_max_table_capacity, max_field_section_size, qpack_blocked_streams, }
 }
 
 ///|

@@ -16,7 +16,7 @@ test "short header round-trips across spin, key-phase, and pn length" {
   for spin in [false, true] {
     for kp in [false, true] {
       for pnl in [1, 2, 3, 4] {
-        let h : QuicShortHeader = { spin, key_phase: kp, pn_length: pnl, dcid }
+        let h : QuicShortHeader = { spin, key_phase: kp, pn_length: pnl, dcid, }
         let encoded = encode_short_header(h)
         match parse_short_header(encoded[:], dcid.length()) {
           Some((decoded, consumed)) => {

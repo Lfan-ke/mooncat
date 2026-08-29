@@ -43,7 +43,7 @@ pub fn QuicStreamScheduler::new(
   flow : QuicSendFlow,
   max_frame : UInt64,
 ) -> QuicStreamScheduler {
-  { flow, streams: Map([]), order: [], cursor: 0, max_frame }
+  { flow, streams: Map([]), order: [], cursor: 0, max_frame, }
 }
 
 ///|
@@ -54,7 +54,7 @@ fn QuicStreamScheduler::ensure(
   match self.streams.get(id) {
     Some(o) => o
     None => {
-      let o = { pending: 0, offset: 0, fin_queued: false, fin_sent: false }
+      let o = { pending: 0, offset: 0, fin_queued: false, fin_sent: false, }
       self.streams[id] = o
       self.order.push(id)
       o
@@ -153,7 +153,7 @@ pub fn QuicStreamScheduler::next(
     if out.pending == 0UL && out.fin_queued && out.fin_sent == false {
       out.fin_sent = true
       self.cursor = (idx + 1) % n
-      return Some({ stream: id, offset: out.offset, length: 0UL, fin: true })
+      return Some({ stream: id, offset: out.offset, length: 0UL, fin: true, })
     }
   }
   None

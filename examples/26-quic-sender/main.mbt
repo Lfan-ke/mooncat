@@ -77,7 +77,7 @@ fn poll(
 
 ///|
 fn ascii(b : Bytes) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < b.length(); i = i + 1 {
     sb.write_char(b[i].to_int().unsafe_to_char())
   }

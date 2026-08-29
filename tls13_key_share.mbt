@@ -38,7 +38,10 @@ pub fn tls_client_hello_key_shares(
 ///|
 /// Build a ServerHello key_share extension carrying `key` for `group`.
 pub fn tls_key_share_extension(group : Int, key : Bytes) -> TlsExtension {
-  { ext_type: tls_ext_key_share, data: tls_encode_key_share_server(group, key) }
+  {
+    ext_type: tls_ext_key_share,
+    data: tls_encode_key_share_server(group, key),
+  }
 }
 
 ///|

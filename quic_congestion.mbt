@@ -23,7 +23,7 @@ pub fn NewReno::new(max_datagram_size : Int64) -> NewReno {
   let ten = 10L * max_datagram_size
   let floor = if two > 14720L { two } else { 14720L }
   let initial = if ten < floor { ten } else { floor }
-  { cwnd: initial, ssthresh: 1L << 60, bytes_in_flight: 0L, max_datagram_size }
+  { cwnd: initial, ssthresh: 1L << 60, bytes_in_flight: 0L, max_datagram_size, }
 }
 
 ///|

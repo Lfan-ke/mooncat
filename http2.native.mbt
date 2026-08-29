@@ -83,7 +83,7 @@ fn imin(a : Int, b : Int) -> Int {
 /// Latin-1 `Bytes` → `String`, one code unit per octet (HTTP/2 header names and
 /// values are byte strings; the pseudo-headers mooncat reads are ASCII).
 fn h2_bytes_to_str(b : Bytes) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < b.length(); i = i + 1 {
     sb.write_char(b[i].to_int().unsafe_to_char())
   }
@@ -302,7 +302,7 @@ fn h2_response_headers(
   headers : Array[(String, String)],
 ) -> Array[@moonrpc.Header] {
   let out : Array[@moonrpc.Header] = [
-    { name: b":status", value: h2_str_to_bytes(status.to_string()) },
+    { name: b":status", value: h2_str_to_bytes(status.to_string()), },
   ]
   for pair in headers {
     if !h2_is_dropped_response_header(pair.0) {
@@ -426,7 +426,7 @@ async fn H2Conn::dispatch_stream(
   if started.val && !ended.val {
     self.write_body(s.id, s, b"", end_stream=true)
   } else if !started.val {
-    let block = self.enc.encode([{ name: b":status", value: b"500" }])
+    let block = self.enc.encode([{ name: b":status", value: b"500", }])
     self.conn.write(
       @moonrpc.Frame::Headers(
         stream_id=s.id,
@@ -525,31 +525,14 @@ pub async fn serve_h2c_config(app : @moonasgi.AsgiApp, config : Config) -> Unit 
       dual_stack=config.dual_stack,
       reuse_addr=config.reuse_addr,
     )
-    try
-      server.run_forever(
-        (conn, _addr) => drive_h2c(app, conn),
-        allow_failure=config.allow_failure,
-        max_connections?=config.max_connections,
-      )
-    catch {
-      err => {
-        @async.protect_from_cancel(() => {
-          lifespan.shutdown(task) catch {
-            _ => ()
-          }
-        })
-        server.close()
-        raise err
-      }
-    } noraise {
-      _ => {
-        @async.protect_from_cancel(() => {
-          lifespan.shutdown(task) catch {
-            _ => ()
-          }
-        })
-        server.close()
-      }
+    defer {
+      @async.protect_from_cancel(() => lifespan.shutdown(task) catch { _ => () })
+      server.close()
     }
+    server.run_forever(
+      (conn, _addr) => drive_h2c(app, conn),
+      allow_failure=config.allow_failure,
+      max_connections?=config.max_connections,
+    )
   })
 }

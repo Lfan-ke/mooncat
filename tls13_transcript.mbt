@@ -13,7 +13,7 @@ pub struct TranscriptHash {
 ///|
 /// A fresh, empty transcript.
 pub fn TranscriptHash::new() -> TranscriptHash {
-  { messages: Buffer() }
+  { messages: Buffer(), }
 }
 
 ///|

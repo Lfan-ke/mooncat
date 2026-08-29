@@ -158,7 +158,7 @@ pub fn ws_decode_frame(b : BytesView) -> (WsFrame, Int)? {
       payload.write_byte(b[off + i])
     }
   }
-  Some(({ fin, opcode, payload: payload.to_bytes() }, off + len))
+  Some(({ fin, opcode, payload: payload.to_bytes(), }, off + len))
 }
 
 ///|
@@ -199,7 +199,7 @@ pub async fn ws_read_frame(reader : &@io.Reader) -> WsFrame {
   } else {
     raw
   }
-  { fin, opcode, payload }
+  { fin, opcode, payload, }
 }
 
 ///|

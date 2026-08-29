@@ -4,7 +4,7 @@ test "transport parameters encode to the RFC 9000 §18 (id, length, value) form"
     transport_param_int(tp_initial_max_data, 1048576UL),
     transport_param_int(tp_initial_max_streams_bidi, 100UL),
     // initial_source_connection_id carries raw bytes, not a varint.
-    { id: tp_initial_source_connection_id, value: qv_hexb("8394c8f03e515708") },
+    { id: tp_initial_source_connection_id, value: qv_hexb("8394c8f03e515708"), },
   ]
   // id 04 len 04 value 80100000 (varint 1048576); id 08 len 02 value 4064 (100);
   // id 0f len 08 value = the 8-byte connection id.

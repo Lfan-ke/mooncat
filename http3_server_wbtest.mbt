@@ -50,7 +50,7 @@ test "http3 server: routes a request through a handler and encodes the response"
         body: b"hi from mooncat",
       }
     } else {
-      Http3Response::{ status: "404", headers: [], body: b"" }
+      Http3Response::{ status: "404", headers: [], body: b"", }
     }
   }
   let resp = http3_serve(stream, handler)
@@ -63,7 +63,7 @@ test "http3 server: routes a request through a handler and encodes the response"
 test "http3 server: a request stream without pseudo-headers is answered 400" {
   let stream = http3_encode_message([("x-custom", "y")], b"") // no :method / :path
   let resp = http3_serve(stream, fn(_r) {
-    Http3Response::{ status: "200", headers: [], body: b"" }
+    Http3Response::{ status: "200", headers: [], body: b"", }
   })
   let (headers, _) = http3_decode_message(resp)
   assert_eq(h3_header(headers, ":status"), "400")

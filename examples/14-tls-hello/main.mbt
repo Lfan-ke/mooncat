@@ -84,7 +84,7 @@ fn parse_sh(wire : Bytes) -> @mooncat.TlsServerHello? {
 
 ///|
 fn join(a : Array[String]) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < a.length(); i = i + 1 {
     if i > 0 {
       sb.write_string(", ")

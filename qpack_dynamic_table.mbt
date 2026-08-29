@@ -21,7 +21,7 @@ pub(all) struct QpackDynamicTable {
 ///|
 /// A fresh, empty dynamic table with the given capacity in bytes.
 pub fn QpackDynamicTable::new(capacity : Int) -> QpackDynamicTable {
-  { entries: [], used: 0, capacity, insert_count: 0, dropped: 0 }
+  { entries: [], used: 0, capacity, insert_count: 0, dropped: 0, }
 }
 
 ///|

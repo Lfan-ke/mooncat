@@ -59,7 +59,7 @@ pub fn tls_decode_alpn(view : BytesView) -> Array[String] {
 /// Build an ALPN extension carrying `protocols` — the offered list in a ClientHello, or the
 /// single selected protocol in a server's reply.
 pub fn tls_alpn_extension(protocols : Array[String]) -> TlsExtension {
-  { ext_type: tls_ext_alpn, data: tls_encode_alpn(protocols) }
+  { ext_type: tls_ext_alpn, data: tls_encode_alpn(protocols), }
 }
 
 ///|

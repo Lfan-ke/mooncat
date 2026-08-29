@@ -22,7 +22,7 @@ fn h2t_str_to_bytes(s : String) -> Bytes {
 ///|
 /// Latin-1 `Bytes` → `String`, for reading response header/status octets.
 fn h2t_bytes_to_str(b : Bytes) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < b.length(); i = i + 1 {
     sb.write_char(b[i].to_int().unsafe_to_char())
   }
@@ -55,10 +55,10 @@ async fn h2t_get(port : Int, path : String) -> (String, String, Bytes) {
   conn.write(@moonrpc.Frame::Settings(params=[], ack=false).encode())
   let enc = @moonrpc.HpackEncoder::new()
   let block = enc.encode([
-    { name: b":method", value: b"GET" },
-    { name: b":scheme", value: b"http" },
-    { name: b":path", value: h2t_str_to_bytes(path) },
-    { name: b":authority", value: b"127.0.0.1" },
+    { name: b":method", value: b"GET", },
+    { name: b":scheme", value: b"http", },
+    { name: b":path", value: h2t_str_to_bytes(path), },
+    { name: b":authority", value: b"127.0.0.1", },
   ])
   conn.write(
     @moonrpc.Frame::Headers(
@@ -128,7 +128,10 @@ async test "h2c: mooncat serves a moonapi app answering a real HTTP/2 GET" {
         Some(n) => n
         None => "world"
       }
-      @moonapi.json(200, ({ message: "hello \{name}" } : H2Greeting).to_json())
+      @moonapi.json(
+        200,
+        ToJson::to_json(({ message: "hello \{name}", } : H2Greeting)),
+      )
     })
     let app = api.to_asgi()
     let task = g.spawn(() => @mooncat.serve_h2c(app, port=18105))

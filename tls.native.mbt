@@ -130,34 +130,15 @@ pub async fn serve_tls_config(
       dual_stack=config.dual_stack,
       reuse_addr=config.reuse_addr,
     )
-    try
-      server.run_forever(
-        (conn, _addr) => {
-          handle_https_conn(app, conn, cert, config.server_headers)
-        },
-        allow_failure=config.allow_failure,
-        max_connections?=config.max_connections,
-      )
-    catch {
-      err => {
-        @async.protect_from_cancel(() => {
-          lifespan.shutdown(task) catch {
-            _ => ()
-          }
-        })
-        server.close()
-        raise err
-      }
-    } noraise {
-      _ => {
-        @async.protect_from_cancel(() => {
-          lifespan.shutdown(task) catch {
-            _ => ()
-          }
-        })
-        server.close()
-      }
+    defer {
+      @async.protect_from_cancel(() => lifespan.shutdown(task) catch { _ => () })
+      server.close()
     }
+    server.run_forever(
+      (conn, _addr) => handle_https_conn(app, conn, cert, config.server_headers),
+      allow_failure=config.allow_failure,
+      max_connections?=config.max_connections,
+    )
   })
 }
 

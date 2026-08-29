@@ -86,7 +86,7 @@ fn tls_decode_extensions(b : BytesView) -> Array[TlsExtension]? {
     if off + dl > end {
       return None
     }
-    out.push({ ext_type: et, data: b[off:off + dl].to_owned() })
+    out.push({ ext_type: et, data: b[off:off + dl].to_owned(), })
     off = off + dl
   }
   Some(out)
@@ -170,7 +170,7 @@ pub fn decode_client_hello(body : BytesView) -> TlsClientHello? {
   guard tls_decode_extensions(body[off:]) is Some(extensions) else {
     return None
   }
-  Some({ random, session_id, cipher_suites, extensions })
+  Some({ random, session_id, cipher_suites, extensions, })
 }
 
 ///|
@@ -221,5 +221,5 @@ pub fn decode_server_hello(body : BytesView) -> TlsServerHello? {
   guard tls_decode_extensions(body[off:]) is Some(extensions) else {
     return None
   }
-  Some({ random, session_id, cipher_suite, extensions })
+  Some({ random, session_id, cipher_suite, extensions, })
 }

@@ -42,7 +42,7 @@ pub fn http3_parse_request(
   if meth == "" || path == "" {
     None
   } else {
-    Some({ meth, scheme, authority, path, headers: regular, body })
+    Some({ meth, scheme, authority, path, headers: regular, body, })
   }
 }
 
@@ -85,6 +85,6 @@ pub fn http3_serve(
 ) -> Bytes raise Http3FrameError {
   match http3_parse_request(request_bytes) {
     Some(req) => handler(req).encode()
-    None => Http3Response::{ status: "400", headers: [], body: b"" }.encode()
+    None => Http3Response::{ status: "400", headers: [], body: b"", }.encode()
   }
 }

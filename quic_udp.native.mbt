@@ -16,7 +16,7 @@ pub struct QuicUdpEndpoint {
 /// Bind an endpoint to `addr` (e.g. `"0.0.0.0:443"`, or `"127.0.0.1:0"` for an OS-assigned
 /// port). The bound address is available from `local_addr`.
 pub async fn QuicUdpEndpoint::bind(addr : String) -> QuicUdpEndpoint {
-  { server: @socket.UdpServer::UdpServer(@socket.Addr::parse(addr)) }
+  { server: @socket.UdpServer::UdpServer(@socket.Addr::parse(addr)), }
 }
 
 ///|

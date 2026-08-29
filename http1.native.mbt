@@ -224,7 +224,7 @@ fn hex_of(n : Int) -> String {
     digits.push(table[v % 16])
     v = v / 16
   }
-  let out = StringBuilder::new()
+  let out = StringBuilder()
   for i = digits.length() - 1; i >= 0; i = i - 1 {
     out.write_char(digits[i])
   }
@@ -340,7 +340,7 @@ async fn dispatch_http1(
   let is_head = req.http_method == "HEAD"
   let close_delimited = Ref(false)
   let head = fn(extra : String) -> String {
-    let sb = StringBuilder::new()
+    let sb = StringBuilder()
     sb.write_string(
       "\{resp_version} \{resp_status.val} \{reason(resp_status.val)}\r\n",
     )
@@ -473,7 +473,7 @@ test "http1 codec: request-line split, content-length, hex, keep-alive" {
     headers: Map([("connection", "keep-alive")]),
   }
   assert_eq(should_keep_alive(ka_10), true)
-  let close_10 : Http1Request = { ..ka_11, version: "HTTP/1.0" }
+  let close_10 : Http1Request = { ..ka_11, version: "HTTP/1.0", }
   assert_eq(should_keep_alive(close_10), false)
 }
 
@@ -532,7 +532,7 @@ async fn run_h1(req : Http1Request) -> Bytes {
 
 ///|
 async test "http1: a HEAD request keeps content-length but suppresses the body" {
-  let head_resp = run_h1({ ..h1_req("HTTP/1.1"), http_method: "HEAD" })
+  let head_resp = run_h1({ ..h1_req("HTTP/1.1"), http_method: "HEAD", })
   // The framing header a GET would send is present...
   assert_eq(bytes_has(head_resp, b"content-length: 2"), true)
   // ...but the body ("hi") is not.
@@ -722,7 +722,7 @@ async test "http1: a request head past the size cap is rejected" {
     // before the cap; parsing must give up with None rather than buffer on. The write
     // is larger than a pipe buffer, so it runs concurrently with the read.
     let writer = g.spawn(() => {
-      let head = StringBuilder::new()
+      let head = StringBuilder()
       head.write_string("GET / HTTP/1.1\r\n")
       for _i = 0; _i < 400; _i = _i + 1 {
         head.write_string("x-pad: ")

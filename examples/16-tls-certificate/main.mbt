@@ -44,7 +44,7 @@ fn main {
 ///|
 fn hex(b : Bytes) -> String {
   let digits = "0123456789abcdef"
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < b.length(); i = i + 1 {
     let x = b[i].to_int()
     sb.write_char(digits[x >> 4].unsafe_to_char())
@@ -55,7 +55,7 @@ fn hex(b : Bytes) -> String {
 
 ///|
 fn ascii(b : Bytes) -> String {
-  let sb = StringBuilder::new()
+  let sb = StringBuilder()
   for i = 0; i < b.length(); i = i + 1 {
     sb.write_char(b[i].to_int().unsafe_to_char())
   }

@@ -32,6 +32,10 @@ pub(all) struct Config {
   // (← uvicorn's `--root-path`). It reaches the app as `scope["root_path"]`, which
   // is what lets the app build correct absolute URLs for itself.
   root_path : String
+  // What the server says while it runs. Off by default in the sense that a caller
+  // can hand in `Logger::silent()`, but a server that reports nothing is one nobody
+  // can operate, so the default talks.
+  logger : Logger
 }
 
 ///|
@@ -56,6 +60,7 @@ pub fn Config::new(
   allow_failure? : Bool = true,
   graceful_timeout? : Int? = None,
   root_path? : String = "",
+  logger? : Logger = Logger::new(),
 ) -> Config {
   {
     host,
@@ -68,6 +73,7 @@ pub fn Config::new(
     allow_failure,
     graceful_timeout,
     root_path,
+    logger,
   }
 }
 

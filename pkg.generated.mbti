@@ -532,9 +532,10 @@ pub(all) struct Config {
   allow_failure : Bool
   graceful_timeout : Int?
   root_path : String
+  logger : Logger
 }
 pub fn Config::bind(Self) -> String
-pub fn Config::new(host? : String, port? : Int, backlog? : Int, dual_stack? : Bool, reuse_addr? : Bool, server_headers? : Map[String, String], max_connections? : Int?, allow_failure? : Bool, graceful_timeout? : Int?, root_path? : String) -> Self
+pub fn Config::new(host? : String, port? : Int, backlog? : Int, dual_stack? : Bool, reuse_addr? : Bool, server_headers? : Map[String, String], max_connections? : Int?, allow_failure? : Bool, graceful_timeout? : Int?, root_path? : String, logger? : Logger) -> Self
 
 pub(all) struct EcdsaPrivateKey {
   d : @bigint.BigInt
@@ -634,6 +635,26 @@ pub fn Lifespan::new(async (@moonasgi.Scope, async () -> @moonasgi.Event, async 
 pub async fn Lifespan::shutdown(Self, @async.Task[Unit]) -> Unit
 pub fn Lifespan::spawn(Self, @async.TaskGroup[Unit]) -> @async.Task[Unit]
 pub async fn Lifespan::startup(Self, @async.Task[Unit]) -> Unit
+
+pub(all) enum LogLevel {
+  Trace
+  Debug
+  Info
+  Warning
+  Error
+  Critical
+} derive(Eq)
+
+pub(all) struct Logger {
+  level : LogLevel
+  access : Bool
+  write : (String) -> Unit
+}
+pub fn Logger::access_line(Self, String, String, String, String, Int) -> Unit
+pub fn Logger::enabled(Self, LogLevel) -> Bool
+pub fn Logger::log(Self, LogLevel, String) -> Unit
+pub fn Logger::new(level? : LogLevel, access? : Bool, write? : (String) -> Unit) -> Self
+pub fn Logger::silent() -> Self
 
 pub struct NewReno {
   mut cwnd : Int64

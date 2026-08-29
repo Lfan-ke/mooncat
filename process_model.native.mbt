@@ -57,6 +57,7 @@ async fn serve_conn(
   sock : @socket.Tcp,
   config : Config,
   bound : @socket.Addr,
+  peer : @socket.Addr,
 ) -> Unit {
   // The server headers the config asks for are the connection's, not the response's,
   // so they have to be given here rather than added per reply.
@@ -71,6 +72,8 @@ async fn serve_conn(
       conn,
       root_path=config.root_path,
       server_addr=bound,
+      client_addr=peer,
+      logger=config.logger,
     )
     if is_websocket_upgrade(request.headers) {
       break
@@ -91,11 +94,11 @@ async fn accept_loop(
   bound : @socket.Addr,
 ) -> Unit {
   for ;; {
-    let (conn, _addr) = server.accept()
+    let (conn, peer) = server.accept()
     g.spawn_bg(
       () => {
         inflight.val = inflight.val + 1
-        serve_conn(app, conn, config, bound) catch {
+        serve_conn(app, conn, config, bound, peer) catch {
           _ => ()
         }
         inflight.val = inflight.val - 1

@@ -138,6 +138,8 @@ async fn dispatch(
   conn : @http.ServerConnection,
   root_path? : String = "",
   server_addr? : @socket.Addr,
+  client_addr? : @socket.Addr,
+  logger? : Logger = Logger::silent(),
 ) -> Unit {
   if is_websocket_upgrade(request.headers) {
     handle_websocket(app, request, conn)
@@ -156,7 +158,15 @@ async fn dispatch(
     query_string: @utf8.encode(query),
     root_path,
     headers: headers_to_pairs(request.headers),
-    client: Some(addr_pair(conn.client_addr())),
+    // Only when the peer address is genuinely known. `@http.ServerConnection`'s
+    // `client_addr` reports the *listening* address for an accepted connection —
+    // the async layer copies the listener's address onto the accepted socket — so
+    // filling the scope from it would tell the app the server called itself. ASGI
+    // says a server that cannot supply this sends null, and that is the truth here.
+    client: match client_addr {
+      Some(a) => Some(addr_pair(a))
+      None => None
+    },
     server: match server_addr {
       Some(a) => Some(addr_pair(a))
       None => None
@@ -181,10 +191,12 @@ async fn dispatch(
   }
   let started = Ref(false)
   let ended = Ref(false)
+  let sent_status = Ref(0)
   let send : @moonasgi.Send = event => {
     match event {
       HttpResponseStart(status~, headers~, ..) => {
         started.val = true
+        sent_status.val = status
         conn.send_response(
           status,
           reason(status),
@@ -201,7 +213,17 @@ async fn dispatch(
       _ => ()
     }
   }
-  app(scope, receive, send)
+  // An app that raises leaves the client with nothing, so say so and answer 500
+  // rather than dropping the connection silently.
+  app(scope, receive, send) catch {
+    err => {
+      logger.log(Error, "exception in ASGI application: " + err.to_string())
+      if !started.val {
+        conn.send_response(500, reason(500), extra_headers=Map([]))
+        sent_status.val = 500
+      }
+    }
+  }
   // Finalise the response here rather than leaning on the transport's own accept
   // loop: `serve_graceful` drives its own accept loop over a raw ServerConnection
   // and has no equivalent hook, so a response that never sent an explicit final
@@ -209,6 +231,16 @@ async fn dispatch(
   if started.val && !ended.val {
     conn.end_response()
   }
+  logger.access_line(
+    match client_addr {
+      Some(a) => a.to_string()
+      None => "-"
+    },
+    method_str(request.meth),
+    request.path,
+    "1.1",
+    sent_status.val,
+  )
 }
 
 ///|
@@ -239,6 +271,7 @@ pub async fn serve_config(app : @moonasgi.AsgiApp, config : Config) -> Unit {
     let task = lifespan.spawn(g)
     lifespan.startup(task)
     let bound = @socket.Addr::parse(config.bind())
+    config.logger.log(Info, "Started server process on http://" + config.bind())
     let server = @http.Server(
       bound,
       dual_stack=config.dual_stack,
@@ -258,6 +291,7 @@ pub async fn serve_config(app : @moonasgi.AsgiApp, config : Config) -> Unit {
           conn,
           root_path=config.root_path,
           server_addr=bound,
+          logger=config.logger,
         )
       },
       allow_failure=config.allow_failure,
@@ -465,8 +499,57 @@ async test "the request scope carries the peer, the bind address, and a decoded 
     assert_eq(seen[0], "/files/a/b/café")
     assert_eq(seen[1], "/files/a%2Fb/caf%C3%A9")
     assert_eq(seen[2], "/api")
-    assert_eq(seen[3], "127.0.0.1")
+    // run_forever gives no peer address, so ASGI's null is the honest answer.
+    assert_eq(seen[3], "no-client")
     assert_eq(seen[4], "127.0.0.1:18099")
+    task.cancel()
+  })
+}
+
+///|
+/// uvicorn logs one line per request and answers 500 when an app raises. Without
+/// either, a failing endpoint and a working one look the same from outside.
+async test "the server logs each request and turns an app failure into a 500" {
+  @async.with_task_group(g => {
+    let lines : Array[String] = []
+    let app : @moonasgi.AsgiApp = (scope, _receive, send) => {
+      match scope {
+        Http(hs) => {
+          if hs.path == "/boom" {
+            fail("handler blew up")
+          }
+          send(
+            @moonasgi.Event::HttpResponseStart(
+              status=201,
+              headers=[],
+              trailers=false,
+            ),
+          )
+          send(@moonasgi.Event::HttpResponseBody(body=b"ok", more_body=false))
+        }
+        _ => ()
+      }
+    }
+    let task = g.spawn(() => {
+      serve_config(
+        app,
+        Config::new(
+          port=18101,
+          logger=Logger::new(write=line => lines.push(line)),
+        ),
+      )
+    })
+    @async.sleep(300)
+    let (ok, _b) = @http.get("http://127.0.0.1:18101/hello")
+    assert_eq(ok.code, 201)
+    let (boom, _b2) = @http.get("http://127.0.0.1:18101/boom")
+    assert_eq(boom.code, 500)
+    @async.sleep(100)
+    let joined = lines.join(" | ")
+    assert_eq(joined.contains("Started server process"), true)
+    assert_eq(joined.contains("\"GET /hello HTTP/1.1\" 201"), true)
+    assert_eq(joined.contains("exception in ASGI application"), true)
+    assert_eq(joined.contains("\"GET /boom HTTP/1.1\" 500"), true)
     task.cancel()
   })
 }

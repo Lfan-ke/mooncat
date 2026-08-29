@@ -28,6 +28,10 @@ pub(all) struct Config {
   max_connections : Int?
   allow_failure : Bool
   graceful_timeout : Int?
+  // The path prefix this app is mounted under when something in front strips it
+  // (← uvicorn's `--root-path`). It reaches the app as `scope["root_path"]`, which
+  // is what lets the app build correct absolute URLs for itself.
+  root_path : String
 }
 
 ///|
@@ -47,10 +51,11 @@ pub fn Config::new(
   backlog? : Int = 2048,
   dual_stack? : Bool = false,
   reuse_addr? : Bool = true,
-  server_headers? : Map[String, String] = Map([]),
+  server_headers? : Map[String, String] = Map([("server", "mooncat")]),
   max_connections? : Int? = None,
   allow_failure? : Bool = true,
   graceful_timeout? : Int? = None,
+  root_path? : String = "",
 ) -> Config {
   {
     host,
@@ -62,6 +67,7 @@ pub fn Config::new(
     max_connections,
     allow_failure,
     graceful_timeout,
+    root_path,
   }
 }
 

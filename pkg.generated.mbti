@@ -531,9 +531,10 @@ pub(all) struct Config {
   max_connections : Int?
   allow_failure : Bool
   graceful_timeout : Int?
+  root_path : String
 }
 pub fn Config::bind(Self) -> String
-pub fn Config::new(host? : String, port? : Int, backlog? : Int, dual_stack? : Bool, reuse_addr? : Bool, server_headers? : Map[String, String], max_connections? : Int?, allow_failure? : Bool, graceful_timeout? : Int?) -> Self
+pub fn Config::new(host? : String, port? : Int, backlog? : Int, dual_stack? : Bool, reuse_addr? : Bool, server_headers? : Map[String, String], max_connections? : Int?, allow_failure? : Bool, graceful_timeout? : Int?, root_path? : String) -> Self
 
 pub(all) struct EcdsaPrivateKey {
   d : @bigint.BigInt

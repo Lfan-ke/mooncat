@@ -15,6 +15,63 @@ fn method_str(m : @http.RequestMethod) -> String {
 }
 
 ///|
+/// Percent-decode a request target's path into the characters ASGI's `path` carries,
+/// leaving the bytes as they arrived for `raw_path`. A stray `%` or a truncated
+/// escape passes through as written: the target is attacker-controlled, and refusing
+/// to build a scope would leave the server unable to answer at all.
+fn percent_decode(target : String) -> Bytes {
+  let out = @buffer.Buffer()
+  let bytes = @utf8.encode(target)
+  let mut i = 0
+  while i < bytes.length() {
+    let b = bytes[i]
+    if b == b'%' && i + 2 < bytes.length() {
+      match (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2])) {
+        (Some(hi), Some(lo)) => {
+          out.write_byte(((hi * 16 + lo) & 0xff).to_byte())
+          i = i + 3
+          continue
+        }
+        _ => ()
+      }
+    }
+    out.write_byte(b)
+    i = i + 1
+  }
+  out.to_bytes()
+}
+
+///|
+/// One hex digit's value, or `None` for anything else.
+fn hex_digit(b : Byte) -> Int? {
+  let c = b.to_int()
+  if c >= 0x30 && c <= 0x39 {
+    Some(c - 0x30)
+  } else if c >= 0x41 && c <= 0x46 {
+    Some(c - 0x41 + 10)
+  } else if c >= 0x61 && c <= 0x66 {
+    Some(c - 0x61 + 10)
+  } else {
+    None
+  }
+}
+
+///|
+/// An address as the `(host, port)` pair ASGI's `client` and `server` carry. The
+/// host is rendered from the address rather than looked up: a scope is built per
+/// request, and a reverse DNS lookup there would be a network round trip.
+fn addr_pair(addr : @socket.Addr) -> (String, Int) {
+  let text = addr.to_string()
+  // `Show` renders `host:port`; the scope wants them apart.
+  for i = text.length() - 1; i >= 0; i = i - 1 {
+    if text[i] == ':' {
+      return (text[0:i].to_owned(), addr.port())
+    }
+  }
+  (text, addr.port())
+}
+
+///|
 /// Split a raw request target into (path, query_string) at the first '?'.
 fn split_query(raw : String) -> (String, String) {
   let n = raw.length()
@@ -79,23 +136,31 @@ async fn dispatch(
   request : @http.Request,
   body_reader : &@io.Reader,
   conn : @http.ServerConnection,
+  root_path? : String = "",
+  server_addr? : @socket.Addr,
 ) -> Unit {
   if is_websocket_upgrade(request.headers) {
     handle_websocket(app, request, conn)
     return
   }
-  let (path, query) = split_query(request.path)
+  let (raw_path, query) = split_query(request.path)
+  // ASGI's `path` is percent-decoded and `raw_path` is not; a server that hands
+  // over the encoded form for both leaves a router unable to tell `%2F` from `/`.
+  let path = @utf8.decode_lossy(percent_decode(raw_path))
   let scope = @moonasgi.Scope::Http({
     http_version: "1.1",
     http_method: method_str(request.meth),
     scheme: "http",
     path,
-    raw_path: @utf8.encode(path),
+    raw_path: @utf8.encode(raw_path),
     query_string: @utf8.encode(query),
-    root_path: "",
+    root_path,
     headers: headers_to_pairs(request.headers),
-    client: None,
-    server: None,
+    client: Some(addr_pair(conn.client_addr())),
+    server: match server_addr {
+      Some(a) => Some(addr_pair(a))
+      None => None
+    },
     asgi: @moonasgi.AsgiVersion::http(),
     extensions: @moonasgi.Extensions::none(),
     state: Map([]),
@@ -173,8 +238,9 @@ pub async fn serve_config(app : @moonasgi.AsgiApp, config : Config) -> Unit {
     let lifespan = Lifespan::new(app)
     let task = lifespan.spawn(g)
     lifespan.startup(task)
+    let bound = @socket.Addr::parse(config.bind())
     let server = @http.Server(
-      @socket.Addr::parse(config.bind()),
+      bound,
       dual_stack=config.dual_stack,
       reuse_addr=config.reuse_addr,
       headers=config.server_headers,
@@ -184,7 +250,16 @@ pub async fn serve_config(app : @moonasgi.AsgiApp, config : Config) -> Unit {
       server.close()
     }
     server.run_forever(
-      (request, body_reader, conn) => dispatch(app, request, body_reader, conn),
+      (request, body_reader, conn) => {
+        dispatch(
+          app,
+          request,
+          body_reader,
+          conn,
+          root_path=config.root_path,
+          server_addr=bound,
+        )
+      },
       allow_failure=config.allow_failure,
       max_connections?=config.max_connections,
     )
@@ -338,6 +413,60 @@ async test "websocket bridge: offered subprotocols reach the scope" {
     assert_eq(ws.recv().read_all().text(), "go")
     assert_eq(seen, ["chat", "superchat"])
     ws.close()
+    task.cancel()
+  })
+}
+
+///|
+/// uvicorn fills `client`, `server` and `root_path` on every request scope and
+/// percent-decodes `path` while leaving `raw_path` as it arrived. Leaving those
+/// empty means an app cannot log who called, build an absolute URL for itself, or
+/// tell an escaped slash from a real one.
+async test "the request scope carries the peer, the bind address, and a decoded path" {
+  @async.with_task_group(g => {
+    let seen : Array[String] = []
+    let app : @moonasgi.AsgiApp = (scope, _receive, send) => {
+      match scope {
+        Http(hs) => {
+          seen.push(hs.path)
+          seen.push(@utf8.decode_lossy(hs.raw_path))
+          seen.push(hs.root_path)
+          seen.push(
+            match hs.client {
+              Some((host, _port)) => host
+              None => "no-client"
+            },
+          )
+          seen.push(
+            match hs.server {
+              Some((host, port)) => host + ":" + port.to_string()
+              None => "no-server"
+            },
+          )
+          send(
+            @moonasgi.Event::HttpResponseStart(
+              status=200,
+              headers=[],
+              trailers=false,
+            ),
+          )
+          send(@moonasgi.Event::HttpResponseBody(body=b"ok", more_body=false))
+        }
+        _ => ()
+      }
+    }
+    let task = g.spawn(() => {
+      serve_config(app, Config::new(port=18099, root_path="/api"))
+    })
+    @async.sleep(300)
+    let (resp, _b) = @http.get("http://127.0.0.1:18099/files/a%2Fb/caf%C3%A9")
+    assert_eq(resp.code, 200)
+    // `path` is decoded; `raw_path` is not.
+    assert_eq(seen[0], "/files/a/b/café")
+    assert_eq(seen[1], "/files/a%2Fb/caf%C3%A9")
+    assert_eq(seen[2], "/api")
+    assert_eq(seen[3], "127.0.0.1")
+    assert_eq(seen[4], "127.0.0.1:18099")
     task.cancel()
   })
 }

@@ -52,12 +52,26 @@ pub async fn ShutdownHandle::request_stop(self : ShutdownHandle) -> Unit {
 /// the 101 handshake. `read_request` raises on a clean end-of-stream, which ends
 /// the keep-alive loop; a WebSocket upgrade hijacks the connection, so the loop
 /// stops after dispatching it. The connection is always closed on the way out.
-async fn serve_conn(app : @moonasgi.AsgiApp, sock : @socket.Tcp) -> Unit {
-  let conn = @http.ServerConnection::new(sock)
+async fn serve_conn(
+  app : @moonasgi.AsgiApp,
+  sock : @socket.Tcp,
+  config : Config,
+  bound : @socket.Addr,
+) -> Unit {
+  // The server headers the config asks for are the connection's, not the response's,
+  // so they have to be given here rather than added per reply.
+  let conn = @http.ServerConnection::new(sock, headers=config.server_headers)
   defer conn.close()
   for ;; {
     let request = conn.read_request() catch { _ => break }
-    dispatch(app, request, conn, conn)
+    dispatch(
+      app,
+      request,
+      conn,
+      conn,
+      root_path=config.root_path,
+      server_addr=bound,
+    )
     if is_websocket_upgrade(request.headers) {
       break
     }
@@ -73,13 +87,15 @@ async fn accept_loop(
   server : @socket.TcpServer,
   app : @moonasgi.AsgiApp,
   inflight : Ref[Int],
+  config : Config,
+  bound : @socket.Addr,
 ) -> Unit {
   for ;; {
     let (conn, _addr) = server.accept()
     g.spawn_bg(
       () => {
         inflight.val = inflight.val + 1
-        serve_conn(app, conn) catch {
+        serve_conn(app, conn, config, bound) catch {
           _ => ()
         }
         inflight.val = inflight.val - 1
@@ -160,14 +176,15 @@ pub async fn serve_graceful(
     let lifespan = Lifespan::new(app)
     let ltask = lifespan.spawn(g)
     lifespan.startup(ltask)
+    let bound = @socket.Addr::parse(config.bind())
     let server = @socket.TcpServer(
-      @socket.Addr::parse(config.bind()),
+      bound,
       dual_stack=config.dual_stack,
       reuse_addr=config.reuse_addr,
     )
     let inflight = Ref(0)
     let acceptor = g.spawn(
-      () => accept_loop(g, server, app, inflight),
+      () => accept_loop(g, server, app, inflight, config, bound),
       allow_failure=true,
     )
     handle.request.get() catch {

@@ -9,36 +9,47 @@
 pub let tp_max_idle_timeout : UInt64 = 0x01
 
 ///|
+/// The largest UDP payload this endpoint is willing to receive.
 pub let tp_max_udp_payload_size : UInt64 = 0x03
 
 ///|
+/// Connection-level flow-control credit the peer starts with.
 pub let tp_initial_max_data : UInt64 = 0x04
 
 ///|
+/// Starting credit on bidirectional streams this endpoint opens.
 pub let tp_initial_max_stream_data_bidi_local : UInt64 = 0x05
 
 ///|
+/// Starting credit on bidirectional streams the peer opens.
 pub let tp_initial_max_stream_data_bidi_remote : UInt64 = 0x06
 
 ///|
+/// Starting credit on unidirectional streams.
 pub let tp_initial_max_stream_data_uni : UInt64 = 0x07
 
 ///|
+/// How many bidirectional streams the peer may open.
 pub let tp_initial_max_streams_bidi : UInt64 = 0x08
 
 ///|
+/// How many unidirectional streams the peer may open.
 pub let tp_initial_max_streams_uni : UInt64 = 0x09
 
 ///|
+/// The exponent the peer's ACK Delay field is scaled by.
 pub let tp_ack_delay_exponent : UInt64 = 0x0a
 
 ///|
+/// The longest this endpoint will sit on an acknowledgement.
 pub let tp_max_ack_delay : UInt64 = 0x0b
 
 ///|
+/// How many connection ids this endpoint will keep active at once.
 pub let tp_active_connection_id_limit : UInt64 = 0x0e
 
 ///|
+/// The source connection id this endpoint used on its first packet, which is what binds the handshake to the addresses it ran over.
 pub let tp_initial_source_connection_id : UInt64 = 0x0f
 
 ///|

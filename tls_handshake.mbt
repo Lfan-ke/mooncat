@@ -15,6 +15,7 @@ pub(all) struct TlsExtension {
 pub let tls_client_hello : Int = 1
 
 ///|
+/// ServerHello (RFC 8446 §4.1.3): the server's half of the key exchange.
 pub let tls_server_hello : Int = 2
 
 ///|

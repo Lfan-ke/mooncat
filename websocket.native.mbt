@@ -137,17 +137,34 @@ async fn handle_websocket(
   app : @moonasgi.AsgiApp,
   request : @http.Request,
   conn : @http.ServerConnection,
+  config~ : Config,
+  client_addr? : @socket.Addr,
 ) -> Unit {
   let (path, query) = split_query(request.path)
+  let peer = match client_addr {
+    Some(a) => Some(addr_pair(a))
+    None => None
+  }
+  let (client, scheme) = if config.proxy_headers {
+    proxy_rewrite(
+      request.headers,
+      peer,
+      "ws",
+      trusted=config.forwarded_allow_ips,
+      websocket=true,
+    )
+  } else {
+    (peer, "ws")
+  }
   let scope = @moonasgi.Scope::WebSocket({
     http_version: "1.1",
-    scheme: "ws",
+    scheme,
     path,
     raw_path: @utf8.encode(path),
     query_string: @utf8.encode(query),
-    root_path: "",
+    root_path: config.root_path,
     headers: headers_to_pairs(request.headers),
-    client: None,
+    client,
     server: None,
     subprotocols: parse_subprotocols(request.headers),
     asgi: @moonasgi.AsgiVersion::websocket(),

@@ -107,21 +107,24 @@ fn response_headers(pairs : Array[(String, String)]) -> Map[String, String] {
 }
 
 ///|
-fn reason(code : Int) -> String {
-  match code {
-    200 => "OK"
-    201 => "Created"
-    204 => "No Content"
-    301 => "Moved Permanently"
-    302 => "Found"
-    304 => "Not Modified"
-    400 => "Bad Request"
-    401 => "Unauthorized"
-    403 => "Forbidden"
-    404 => "Not Found"
-    405 => "Method Not Allowed"
-    500 => "Internal Server Error"
-    _ => ""
+/// Whether the app already supplied `name`, compared case-insensitively: ASGI header names are
+/// conventionally lowercase but nothing enforces it, and a second `Date` is worse than none.
+fn has_field(pairs : Array[(String, String)], name : String) -> Bool {
+  for pair in pairs {
+    if pair.0.to_lower() == name {
+      return true
+    }
+  }
+  false
+}
+
+///|
+/// Whether the served-request count has reached the configured ceiling (← uvicorn's
+/// `--limit-max-requests`). `None` never trips, which is uvicorn's default: serve until stopped.
+fn over_request_limit(served : Int, limit : Int?) -> Bool {
+  match limit {
+    Some(n) => served >= n
+    None => false
   }
 }
 
@@ -136,37 +139,48 @@ async fn dispatch(
   request : @http.Request,
   body_reader : &@io.Reader,
   conn : @http.ServerConnection,
-  root_path? : String = "",
+  config~ : Config,
   server_addr? : @socket.Addr,
   client_addr? : @socket.Addr,
-  logger? : Logger = Logger::silent(),
 ) -> Unit {
+  let logger = config.logger
   if is_websocket_upgrade(request.headers) {
-    handle_websocket(app, request, conn)
+    handle_websocket(app, request, conn, config~, client_addr?)
     return
   }
   let (raw_path, query) = split_query(request.path)
   // ASGI's `path` is percent-decoded and `raw_path` is not; a server that hands
   // over the encoded form for both leaves a router unable to tell `%2F` from `/`.
   let path = @utf8.decode_lossy(percent_decode(raw_path))
+  // Only when the peer address is genuinely known. `@http.ServerConnection`'s
+  // `client_addr` reports the *listening* address for an accepted connection —
+  // the async layer copies the listener's address onto the accepted socket — so
+  // filling the scope from it would tell the app the server called itself. ASGI
+  // says a server that cannot supply this sends null, and that is the truth here.
+  let peer = match client_addr {
+    Some(a) => Some(addr_pair(a))
+    None => None
+  }
+  let (client, scheme) = if config.proxy_headers {
+    proxy_rewrite(
+      request.headers,
+      peer,
+      "http",
+      trusted=config.forwarded_allow_ips,
+    )
+  } else {
+    (peer, "http")
+  }
   let scope = @moonasgi.Scope::Http({
     http_version: "1.1",
     http_method: method_str(request.meth),
-    scheme: "http",
+    scheme,
     path,
     raw_path: @utf8.encode(raw_path),
     query_string: @utf8.encode(query),
-    root_path,
+    root_path: config.root_path,
     headers: headers_to_pairs(request.headers),
-    // Only when the peer address is genuinely known. `@http.ServerConnection`'s
-    // `client_addr` reports the *listening* address for an accepted connection —
-    // the async layer copies the listener's address onto the accepted socket — so
-    // filling the scope from it would tell the app the server called itself. ASGI
-    // says a server that cannot supply this sends null, and that is the truth here.
-    client: match client_addr {
-      Some(a) => Some(addr_pair(a))
-      None => None
-    },
+    client,
     // ASGI lets `server` carry no port (a unix socket has none), so the pair's
     // second half is optional there while `client`'s is not.
     server: match server_addr {
@@ -202,11 +216,11 @@ async fn dispatch(
       HttpResponseStart(status~, headers~, ..) => {
         started.val = true
         sent_status.val = status
-        conn.send_response(
-          status,
-          reason(status),
-          extra_headers=response_headers(headers),
-        )
+        let extra = response_headers(headers)
+        if config.date_header && !has_field(headers, "date") {
+          extra["date"] = http_date_now()
+        }
+        conn.send_response(status, reason(status), extra_headers=extra)
       }
       HttpResponseBody(body~, more_body~) => {
         conn.write(body)
@@ -224,7 +238,11 @@ async fn dispatch(
     err => {
       logger.log(Error, "exception in ASGI application: " + err.to_string())
       if !started.val {
-        conn.send_response(500, reason(500), extra_headers=Map([]))
+        let extra : Map[String, String] = Map([])
+        if config.date_header {
+          extra["date"] = http_date_now()
+        }
+        conn.send_response(500, reason(500), extra_headers=extra)
         sent_status.val = 500
       }
     }
@@ -287,21 +305,82 @@ pub async fn serve_config(app : @moonasgi.AsgiApp, config : Config) -> Unit {
       @async.protect_from_cancel(() => lifespan.shutdown(task) catch { _ => () })
       server.close()
     }
-    server.run_forever(
-      (request, body_reader, conn) => {
-        dispatch(
-          app,
-          request,
-          body_reader,
-          conn,
-          root_path=config.root_path,
-          server_addr=bound,
-          logger=config.logger,
-        )
-      },
-      allow_failure=config.allow_failure,
-      max_connections?=config.max_connections,
-    )
+    // uvicorn's `--limit-max-requests` recycles the worker once it has served that many; the count
+    // is shared across every connection this acceptor is running. The acceptor has to be a task of
+    // its own so the limit can stop it — a handler that merely raised would be swallowed by
+    // `allow_failure` and the server would keep serving.
+    let served = Ref(0)
+    let inflight = Ref(0)
+    let stop : @aqueue.Queue[Unit] = @aqueue.Queue::Queue(kind=Unbounded)
+    let acceptor = g.spawn(() => {
+      server.run_forever(
+        (request, body_reader, conn) => {
+          inflight.val = inflight.val + 1
+          defer {
+            inflight.val = inflight.val - 1
+          }
+          dispatch(app, request, body_reader, conn, config~, server_addr=bound)
+          served.val = served.val + 1
+          if over_request_limit(served.val, config.limit_max_requests) {
+            config.logger.log(
+              Info,
+              "Maximum request limit reached, stopping the server",
+            )
+            stop.put(())
+          }
+        },
+        allow_failure=config.allow_failure,
+        max_connections?=config.max_connections,
+      )
+    })
+    stop.get() catch {
+      _ => ()
+    }
+    // Let the requests still running finish before the acceptor — and with it every connection
+    // it owns — is torn down, the same drain `serve_graceful` does. `run_forever` offers no hook
+    // to stop accepting without also dropping what it is already serving.
+    drain(inflight, config.graceful_timeout)
+    acceptor.cancel()
+  })
+}
+
+///|
+/// `--limit-max-requests` has to hold on the acceptor most servers actually run, not only on the
+/// graceful one: `serve` / `serve_config` is the plain entry point, and a limit honoured on the
+/// other path only is a limit nobody gets.
+async test "serve_config stops itself after limit_max_requests" {
+  @async.with_task_group(g => {
+    let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
+      send(
+        @moonasgi.Event::HttpResponseStart(
+          status=200,
+          headers=[],
+          trailers=false,
+        ),
+      )
+      send(@moonasgi.Event::HttpResponseBody(body=b"ok", more_body=false))
+    }
+    let srv = g.spawn(() => {
+      serve_config(
+        app,
+        Config::new(
+          port=18104,
+          limit_max_requests=Some(2),
+          logger=Logger::silent(),
+        ),
+      )
+    })
+    @async.sleep(300)
+    let (first, _b1) = @http.get("http://127.0.0.1:18104/one")
+    assert_eq(first.code, 200)
+    let (second, _b2) = @http.get("http://127.0.0.1:18104/two")
+    assert_eq(second.code, 200)
+    // Bounded, so a limit that never trips fails this test rather than parking it forever.
+    let stopped = @async.with_timeout_opt(5000, () => srv.wait())
+    if stopped is None {
+      srv.cancel()
+    }
+    assert_eq(stopped is Some(_), true)
   })
 }
 

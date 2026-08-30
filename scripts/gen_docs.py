@@ -6,11 +6,13 @@ import re, html, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SECTIONS = [
-    ("serve", ('server.native.mbt', 'http1.native.mbt', 'config.mbt', 'lifespan.mbt', 'process_model.native.mbt', 'process_reload.native.mbt'), "Serving",
+    ("serve", ('server.native.mbt', 'http1.native.mbt', 'config.mbt', 'lifespan.mbt', 'process_model.native.mbt', 'process_reload.native.mbt', 'date.mbt', 'proxy.native.mbt'), "Serving",
      "The accept loop that turns each connection into a Scope / Receive / Send and "
      "drives your moonasgi app: the Config record uvicorn's settings map onto, the "
      "lifespan protocol run around the listener, the graceful shutdown path that "
-     "drains in flight requests before it closes, and the reload watcher."),
+     "drains in flight requests before it closes, the reload watcher, the Date "
+     "header stamped on every response, and the forwarded headers a trusted proxy "
+     "is believed on."),
     ("websocket", ('websocket.native.mbt', 'websocket_frame.mbt', 'websocket_handshake.mbt', 'websocket_serve.native.mbt'), "WebSocket",
      "The frame-to-Event bridge that drives a websocket Scope through the SEAM: "
      "connect / accept / receive / send / disconnect / close, the RFC 6455 frame "

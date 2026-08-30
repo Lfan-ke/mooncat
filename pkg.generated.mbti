@@ -132,11 +132,17 @@ pub fn http3_settings_decode(Bytes) -> Array[(UInt64, UInt64)] raise Http3FrameE
 
 pub fn http3_settings_encode(Array[(UInt64, UInt64)]) -> Bytes
 
+pub fn http_date(Int64) -> String
+
+pub fn http_date_now() -> String
+
 pub fn parse_frame(BytesView) -> (QuicFrame, Int)?
 
 pub fn parse_long_header(BytesView) -> (QuicLongHeader, Int)?
 
 pub fn parse_short_header(BytesView, Int) -> (QuicShortHeader, Int)?
+
+pub fn proxy_rewrite(Map[String, String], (String, Int)?, String, trusted~ : Array[String], websocket? : Bool) -> ((String, Int)?, String)
 
 pub fn qpack_decode_decoder_inst(BytesView) -> (QpackDecoderInst, Int)?
 
@@ -628,17 +634,21 @@ pub fn websocket_handshake_response(String, String?, Array[(String, String)]) ->
 
 pub fn websocket_select_subprotocol(Array[String], Array[String]) -> String?
 
+pub fn ws_check_frame(Int, Int, Int64, from_client~ : Bool, max_size~ : Int) -> WsOpcode raise WsError
+
 pub fn ws_close_payload(Int, String) -> Bytes
 
-pub fn ws_decode_frame(BytesView) -> (WsFrame, Int)?
+pub fn ws_decode_frame(BytesView, from_client? : Bool, max_size? : Int) -> (WsFrame, Int)? raise WsError
 
 pub fn ws_encode_frame(Bool, WsOpcode, Bytes, mask? : Bytes) -> Bytes
 
+pub let ws_max_size : Int
+
 pub fn ws_opcode_of_int(Int) -> WsOpcode?
 
-pub async fn ws_read_frame(&@io.Reader) -> WsFrame
+pub async fn ws_read_frame(&@io.Reader, from_client? : Bool, max_size? : Int) -> WsFrame
 
-pub async fn ws_read_message(&@io.Reader, &@io.Writer) -> WsMessage
+pub async fn ws_read_message(&@io.Reader, &@io.Writer, max_size? : Int) -> WsMessage
 
 pub fn x25519(Bytes, Bytes) -> Bytes
 
@@ -714,7 +724,7 @@ pub(all) suberror TlsAlert {
 } derive(Eq, @debug.Debug)
 
 pub suberror WsError {
-  WsError(String)
+  WsError(Int, String)
 }
 
 // Types and methods
@@ -768,9 +778,17 @@ pub(all) struct Config {
   graceful_timeout : Int?
   root_path : String
   logger : Logger
+  timeout_keep_alive : Int
+  limit_max_requests : Int?
+  limit_concurrency : Int?
+  max_head_size : Int
+  date_header : Bool
+  proxy_headers : Bool
+  forwarded_allow_ips : Array[String]
+  ws : WsConfig
 }
 pub fn Config::bind(Self) -> String
-pub fn Config::new(host? : String, port? : Int, backlog? : Int, dual_stack? : Bool, reuse_addr? : Bool, server_headers? : Map[String, String], max_connections? : Int?, allow_failure? : Bool, graceful_timeout? : Int?, root_path? : String, logger? : Logger) -> Self
+pub fn Config::new(host? : String, port? : Int, backlog? : Int, dual_stack? : Bool, reuse_addr? : Bool, server_headers? : Map[String, String], max_connections? : Int?, allow_failure? : Bool, graceful_timeout? : Int?, root_path? : String, logger? : Logger, timeout_keep_alive? : Int, limit_max_requests? : Int?, limit_concurrency? : Int?, max_head_size? : Int, date_header? : Bool, proxy_headers? : Bool, forwarded_allow_ips? : Array[String], ws? : WsConfig) -> Self
 
 pub(all) struct EcdsaPrivateKey {
   d : @bigint.BigInt
@@ -1528,6 +1546,11 @@ pub struct Validity {
   not_after : Int64
 } derive(Eq, @debug.Debug)
 
+pub(all) struct WsConfig {
+  max_size : Int
+}
+pub fn WsConfig::new(max_size? : Int) -> Self
+
 pub(all) struct WsFrame {
   fin : Bool
   opcode : WsOpcode
@@ -1535,7 +1558,7 @@ pub(all) struct WsFrame {
 } derive(Eq, @debug.Debug)
 
 pub(all) enum WsMessage {
-  WsText(Bytes)
+  WsText(String)
   WsBinary(Bytes)
   WsClose(Int, Bytes)
 } derive(Eq, @debug.Debug)
@@ -1548,6 +1571,7 @@ pub(all) enum WsOpcode {
   Ping
   Pong
 } derive(Eq, @debug.Debug)
+pub fn WsOpcode::is_control(Self) -> Bool
 pub fn WsOpcode::to_int(Self) -> Int
 
 // Type aliases

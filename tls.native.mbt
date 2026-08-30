@@ -57,20 +57,22 @@ async fn tls_accept(conn : @socket.Tcp, cert : TlsCert) -> @tls.Tls {
 async fn handle_https_conn(
   app : @moonasgi.AsgiApp,
   conn : @socket.Tcp,
+  peer : @socket.Addr,
   cert : TlsCert,
-  server_headers : Map[String, String],
+  config : Config,
 ) -> Unit {
   let tls = tls_accept(conn, cert)
   defer tls.close()
   for ;; {
-    guard parse_http1_request(tls) is Some(req) else { break }
+    guard next_head(tls, config) is Some(req) else { break }
     let keep = dispatch_http1(
       app,
       req,
       tls,
       tls,
       scheme="https",
-      server_headers~,
+      config~,
+      client_addr=peer,
     )
     if !keep {
       break
@@ -135,7 +137,7 @@ pub async fn serve_tls_config(
       server.close()
     }
     server.run_forever(
-      (conn, _addr) => handle_https_conn(app, conn, cert, config.server_headers),
+      (conn, addr) => handle_https_conn(app, conn, addr, cert, config),
       allow_failure=config.allow_failure,
       max_connections?=config.max_connections,
     )

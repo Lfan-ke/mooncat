@@ -20,9 +20,9 @@ priv struct Http1Request {
 }
 
 ///|
-/// The cap on a request's head (request line + all header lines). A peer exceeding
-/// it is rejected before its headers can pin unbounded memory — uvicorn's
-/// `h11_max_incomplete_event_size` default of 16 KiB.
+/// The default cap on a request's head (request line + all header lines). A peer exceeding it is
+/// rejected before its headers can pin unbounded memory — uvicorn's
+/// `h11_max_incomplete_event_size` default of 16 KiB. `Config::max_head_size` overrides it.
 let max_head_size : Int = 16 * 1024
 
 ///|
@@ -94,8 +94,12 @@ fn parse_content_length(s : String) -> Int {
 /// signal the keep-alive accept loop uses to stop reading further requests from
 /// a closed connection — or on a malformed request line. Header names are
 /// lowercased per ASGI's latin1-lowercased convention; values are OWS-trimmed
-/// per RFC 7230 §3.2.
-async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
+/// per RFC 7230 §3.2. `max_head` bounds the whole head (← uvicorn's
+/// `h11_max_incomplete_event_size`).
+async fn parse_http1_request(
+  reader : &@io.Reader,
+  max_head? : Int = max_head_size,
+) -> Http1Request? {
   let line = reader.read_until("\r\n")
   guard line is Some(request_line) else { return None }
   guard split_request_line(request_line) is Some((verb, target, version)) else {
@@ -112,7 +116,7 @@ async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
       break
     }
     head_bytes = head_bytes + header_line.length() + 2
-    if head_bytes > max_head_size {
+    if head_bytes > max_head {
       return None
     }
     let colon = index_of(header_line, ':', 0)
@@ -156,6 +160,21 @@ async fn parse_http1_request(reader : &@io.Reader) -> Http1Request? {
     chunked,
     expect_continue,
   })
+}
+
+///|
+/// Read the next request head off a connection that is between requests, giving up after
+/// `Config::timeout_keep_alive` (← uvicorn's `--timeout-keep-alive`). `None` means the peer went
+/// quiet or went away — either way the connection is finished, and holding it open costs a socket
+/// and a task for as long as the peer cares to say nothing.
+async fn next_head(reader : &@io.Reader, config : Config) -> Http1Request? {
+  match
+    @async.with_timeout_opt(config.timeout_keep_alive, () => {
+      parse_http1_request(reader, max_head=config.max_head_size)
+    }) {
+    Some(req) => req
+    None => None
+  }
 }
 
 ///|
@@ -279,15 +298,26 @@ async fn dispatch_http1(
   reader : &@io.Reader,
   writer : &@io.Writer,
   scheme~ : String,
-  server_headers? : Map[String, String] = Map([]),
+  config? : Config = Config::new(),
+  client_addr? : @socket.Addr,
 ) -> Bool {
+  let server_headers = config.server_headers
   // A WebSocket upgrade is bridged over the raw stream (with subprotocol echo) and ends the
   // connection — it never returns to the keep-alive HTTP loop.
   if is_websocket_upgrade(req.headers) {
-    serve_websocket_raw(app, req, reader, writer)
+    serve_websocket_raw(app, req, reader, writer, config~, client_addr?)
     return false
   }
   let (path, query) = split_query(req.target)
+  let peer = match client_addr {
+    Some(a) => Some(addr_pair(a))
+    None => None
+  }
+  let (client, req_scheme) = if config.proxy_headers {
+    proxy_rewrite(req.headers, peer, scheme, trusted=config.forwarded_allow_ips)
+  } else {
+    (peer, scheme)
+  }
   let scope = @moonasgi.Scope::Http({
     http_version: if req.version == "HTTP/1.0" {
       "1.0"
@@ -295,13 +325,13 @@ async fn dispatch_http1(
       "1.1"
     },
     http_method: req.http_method,
-    scheme,
+    scheme: req_scheme,
     path,
     raw_path: @utf8.encode(path),
     query_string: @utf8.encode(query),
-    root_path: "",
+    root_path: config.root_path,
     headers: headers_to_pairs(req.headers),
-    client: None,
+    client,
     server: None,
     asgi: @moonasgi.AsgiVersion::http(),
     extensions: @moonasgi.Extensions::none(),
@@ -344,10 +374,10 @@ async fn dispatch_http1(
     sb.write_string(
       "\{resp_version} \{resp_status.val} \{reason(resp_status.val)}\r\n",
     )
-    let app_keys : Map[String, Bool] = Map([])
+    let sent : Map[String, Bool] = Map([])
     for pair in resp_headers.val {
       let kl = pair.0.to_lower()
-      app_keys[kl] = true
+      sent[kl] = true
       if kl != "content-length" && kl != "transfer-encoding" {
         sb.write_string("\{pair.0}: \{pair.1}\r\n")
       }
@@ -357,16 +387,21 @@ async fn dispatch_http1(
     // path, so HTTPS responses carry them too.
     for name, value in server_headers {
       let kl = name.to_lower()
-      if !app_keys.contains(kl) &&
+      if !sent.contains(kl) &&
         kl != "content-length" &&
         kl != "transfer-encoding" {
+        sent[kl] = true
         sb.write_string("\{name}: \{value}\r\n")
       }
+    }
+    // RFC 7231 §7.1.1.2 asks an origin server with a clock to date every response.
+    if config.date_header && !sent.contains("date") {
+      sb.write_string("date: \{http_date_now()}\r\n")
     }
     // Signal the connection's fate unless the app already set `Connection`: a server
     // that will close SHOULD say so (RFC 7230 §6.1), and HTTP/1.0 needs an explicit
     // `keep-alive` since it defaults to close.
-    if !app_keys.contains("connection") {
+    if !sent.contains("connection") {
       let will_keep_alive = should_keep_alive(req) && !close_delimited.val
       if !will_keep_alive {
         sb.write_string("connection: close\r\n")
@@ -515,17 +550,21 @@ fn bytes_has(hay : Bytes, needle : Bytes) -> Bool {
 ///|
 /// Drive `dispatch_http1` for `req` with a trivial 200 app over in-memory pipes and
 /// return the raw response bytes (test helper).
-async fn run_h1(req : Http1Request) -> Bytes {
+async fn run_h1(
+  req : Http1Request,
+  config? : Config = Config::new(),
+  headers? : Array[(String, String)] = [],
+) -> Bytes {
   let (req_r, req_w) = @pipe.pipe()
   req_w.close()
   let (resp_r, resp_w) = @pipe.pipe()
   let app : @moonasgi.AsgiApp = (_scope, _receive, send) => {
     send(
-      @moonasgi.Event::HttpResponseStart(status=200, headers=[], trailers=false),
+      @moonasgi.Event::HttpResponseStart(status=200, headers~, trailers=false),
     )
     send(@moonasgi.Event::HttpResponseBody(body=b"hi", more_body=false))
   }
-  let _ = dispatch_http1(app, req, req_r, resp_w, scheme="http")
+  let _ = dispatch_http1(app, req, req_r, resp_w, scheme="http", config~)
   resp_w.close()
   drain_pipe(resp_r)
 }
@@ -647,7 +686,7 @@ async test "http1: configured server headers ride the response, unless the app s
     req_r,
     resp_w,
     scheme="http",
-    server_headers=Map([("server", "mooncat")]),
+    config=Config::new(server_headers=Map([("server", "mooncat")])),
   )
   resp_w.close()
   assert_eq(bytes_has(drain_pipe(resp_r), b"server: mooncat"), true)
@@ -672,7 +711,7 @@ async test "http1: configured server headers ride the response, unless the app s
     req_r2,
     resp_w2,
     scheme="http",
-    server_headers=Map([("server", "mooncat")]),
+    config=Config::new(server_headers=Map([("server", "mooncat")])),
   )
   resp_w2.close()
   let resp2 = drain_pipe(resp_r2)
@@ -770,4 +809,204 @@ async test "http1: a chunked body with a chunk extension and a trailer decodes c
   w.write(b"4;n=v\r\ndata\r\n0\r\nx-checksum: 1\r\n\r\n")
   w.close()
   assert_eq(read_chunked_body(r) == b"data", true)
+}
+
+///|
+/// The keep-alive read that both HTTPS and plaintext connections sit in between requests. A peer
+/// that connects and says nothing must not be able to hold the connection open indefinitely, which
+/// is what an unbounded read gave it.
+async test "http1: an idle keep-alive read gives up after timeout_keep_alive" {
+  @async.with_task_group(g => {
+    // A pipe nobody ever writes to: the peer is connected and silent.
+    let (r, w) = @pipe.pipe()
+    let opened = @async.now()
+    // Bounded from outside as well, so a read that ignores the configured deadline fails this
+    // test instead of wedging the suite in the very wait it was supposed to end.
+    let head = @async.with_timeout_opt(3000, () => {
+      next_head(r, Config::new(timeout_keep_alive=250))
+    })
+    let waited = @async.now() - opened
+    assert_eq(head is Some(None), true)
+    // It waited out its own timeout rather than returning at once.
+    assert_eq(waited >= 200L, true)
+    // A request that does arrive is read normally.
+    let feeder = g.spawn(() => {
+      w.write(b"GET /ok HTTP/1.1\r\nhost: x\r\n\r\n") catch {
+        _ => ()
+      }
+      w.close()
+    })
+    guard next_head(r, Config::new(timeout_keep_alive=3000)) is Some(req) else {
+      fail("a request that arrives inside the timeout should be read")
+    }
+    assert_eq(req.target, "/ok")
+    feeder.cancel()
+  })
+}
+
+///|
+/// The head cap the connection loop applies is the configured one, not the module default: a
+/// service behind a proxy that adds a large header block has to be able to raise it.
+async test "http1: the keep-alive read applies the configured head cap" {
+  @async.with_task_group(g => {
+    let head = b"GET /ok HTTP/1.1\r\nx-pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n"
+    let (r, w) = @pipe.pipe()
+    let feeder = g.spawn(() => {
+      w.write(head) catch {
+        _ => ()
+      }
+      w.close()
+    })
+    assert_eq(
+      next_head(r, Config::new(max_head_size=64, timeout_keep_alive=3000))
+      is None,
+      true,
+    )
+    feeder.cancel()
+    // The same head under the default cap parses.
+    let (r2, w2) = @pipe.pipe()
+    let feeder2 = g.spawn(() => {
+      w2.write(head) catch {
+        _ => ()
+      }
+      w2.close()
+    })
+    guard next_head(r2, Config::new(timeout_keep_alive=3000)) is Some(req) else {
+      fail("the default 16 KiB cap should accept a 130-byte head")
+    }
+    assert_eq(req.target, "/ok")
+    feeder2.cancel()
+  })
+}
+
+///|
+/// RFC 7231 §7.1.1.2: an origin server with a clock sends `Date` on every response, and uvicorn
+/// does. A cache in front of a server that omits it has to invent one.
+async test "http1: every response carries a well-formed Date header" {
+  let resp = run_h1(h1_req("HTTP/1.1"))
+  assert_eq(bytes_has(resp, b"date: "), true)
+  // IMF-fixdate is fixed-width and always GMT, so the rendered value is exactly re-derivable.
+  assert_eq(bytes_has(resp, @utf8.encode(http_date_now())), true)
+  assert_eq(bytes_has(resp, b" GMT\r\n"), true)
+}
+
+///|
+/// The self-built codec builds its own scope, so it needs its own forwarded-header handling: a
+/// request that reached an HTTPS listener through a terminating proxy still has to reach the app
+/// with the scheme the client actually used.
+async test "http1: a trusted proxy's forwarded headers reach the self-built scope" {
+  let seen : Array[String] = []
+  let watcher : @moonasgi.AsgiApp = (scope, _receive, send) => {
+    guard scope is Http(hs) else { return }
+    seen.push(hs.scheme)
+    seen.push(
+      match hs.client {
+        Some((host, port)) => "\{host}:\{port}"
+        None => "no-client"
+      },
+    )
+    send(
+      @moonasgi.Event::HttpResponseStart(status=200, headers=[], trailers=false),
+    )
+    send(@moonasgi.Event::HttpResponseBody(body=b"ok", more_body=false))
+  }
+  let req = {
+    ..h1_req("HTTP/1.1"),
+    headers: Map([
+      ("x-forwarded-for", "203.0.113.7"),
+      ("x-forwarded-proto", "https"),
+    ]),
+  }
+  let (req_r, req_w) = @pipe.pipe()
+  req_w.close()
+  let (_resp_r, resp_w) = @pipe.pipe()
+  // No peer address is known on this transport, so only the wildcard can trust the headers.
+  let _ = dispatch_http1(
+    watcher,
+    req,
+    req_r,
+    resp_w,
+    scheme="http",
+    config=Config::new(forwarded_allow_ips=["*"]),
+  )
+  assert_eq(seen[0], "https")
+  assert_eq(seen[1], "203.0.113.7:0")
+
+  // The default trust set does not include an unknown peer, so nothing is rewritten.
+  let strict : Array[String] = []
+  let (req_r2, req_w2) = @pipe.pipe()
+  req_w2.close()
+  let (_resp_r2, resp_w2) = @pipe.pipe()
+  let _ = dispatch_http1(
+    watcher,
+    req,
+    req_r2,
+    resp_w2,
+    scheme="http",
+    config=Config::new(forwarded_allow_ips=strict),
+  )
+  assert_eq(seen[2], "http")
+  assert_eq(seen[3], "no-client")
+}
+
+///|
+/// `date_header=false` is uvicorn's `--no-date-header`: something in front is already dating the
+/// response, and two `Date` headers is worse than one.
+async test "http1: date_header=false leaves the Date header off" {
+  let resp = run_h1(h1_req("HTTP/1.1"), config=Config::new(date_header=false))
+  assert_eq(bytes_has(resp, b"date: "), false)
+  // The rest of the response is unchanged.
+  assert_eq(bytes_has(resp, b"content-length: 2"), true)
+}
+
+///|
+/// An app that dates its own response keeps its value, and does not get a second header.
+async test "http1: an app-supplied Date is not duplicated" {
+  let fixed = "Sun, 06 Nov 1994 08:49:37 GMT"
+  let resp = run_h1(h1_req("HTTP/1.1"), headers=[("date", fixed)])
+  assert_eq(bytes_has(resp, @utf8.encode("date: " + fixed)), true)
+  // Exactly one `date:` in the head — the app's.
+  assert_eq(count_bytes(resp, b"date: "), 1)
+}
+
+///|
+/// How many times `needle` occurs in `hay` (test helper: a duplicate header is invisible to a
+/// "contains" check).
+fn count_bytes(hay : Bytes, needle : Bytes) -> Int {
+  let n = needle.length()
+  let mut found = 0
+  let mut i = 0
+  while i + n <= hay.length() {
+    let mut j = 0
+    while j < n && hay[i + j] == needle[j] {
+      j = j + 1
+    }
+    if j == n {
+      found = found + 1
+      i = i + n
+    } else {
+      i = i + 1
+    }
+  }
+  found
+}
+
+///|
+/// uvicorn's `--h11-max-incomplete-event-size` is a knob, not a constant: a service behind a proxy
+/// that adds a large header block has to be able to raise it, and one facing the open internet may
+/// want it lower than the 16 KiB default.
+async test "http1: the request-head cap is configurable, not fixed" {
+  // A head of roughly 130 bytes: under the 16 KiB default, over a 64-byte cap.
+  let head = b"GET /ok HTTP/1.1\r\nx-pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n"
+  let (r1, w1) = @pipe.pipe()
+  w1.write(head)
+  w1.close()
+  guard parse_http1_request(r1, max_head=max_head_size) is Some(req) else {
+    fail("the default cap should accept a 130-byte head")
+  }
+  assert_eq(req.target, "/ok")
+  let (r2, w2) = @pipe.pipe()
+  w2.write(head)
+  w2.close()
+  assert_eq(parse_http1_request(r2, max_head=64) is None, true)
 }

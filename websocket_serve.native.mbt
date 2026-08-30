@@ -9,29 +9,50 @@
 /// `writer` (← uvicorn's `WSProtocol`), the raw-transport twin of `handle_websocket`:
 ///
 /// * `receive()` yields `websocket.connect` first, then reads messages with `ws_read_message`
-///   (which reassembles fragments and answers pings) — a text message becomes
+///   (which reassembles fragments, answers pings, and echoes a close) — a text message becomes
 ///   `WebSocketReceive(text=..)`, a binary one `WebSocketReceive(bytes=..)`, and a peer close
 ///   `WebSocketDisconnect(code=..)`.
 /// * `send(WebSocketAccept)` writes the self-built 101 (with the negotiated `Sec-WebSocket-Protocol`
 ///   echoed); `send(WebSocketSendText / WebSocketSendBytes)` writes a message frame;
 ///   `send(WebSocketClose)` writes a close frame; a close sent *before* accept declines the upgrade
 ///   with `403 Forbidden`, as uvicorn does.
+///
+/// A peer that breaks RFC 6455 fails the connection rather than being tolerated: the violation's
+/// close code goes out as a close frame (§7.1.7) and the app sees a disconnect carrying that same
+/// code, so an app can tell a protocol failure from a peer that simply went away (`1006`).
 async fn serve_websocket_raw(
   app : @moonasgi.AsgiApp,
   req : Http1Request,
   reader : &@io.Reader,
   writer : &@io.Writer,
+  config~ : Config,
+  client_addr? : @socket.Addr,
 ) -> Unit {
   let (path, query) = split_query(req.target)
+  let peer = match client_addr {
+    Some(a) => Some(addr_pair(a))
+    None => None
+  }
+  let (client, scheme) = if config.proxy_headers {
+    proxy_rewrite(
+      req.headers,
+      peer,
+      "ws",
+      trusted=config.forwarded_allow_ips,
+      websocket=true,
+    )
+  } else {
+    (peer, "ws")
+  }
   let scope = @moonasgi.Scope::WebSocket({
     http_version: "1.1",
-    scheme: "ws",
+    scheme,
     path,
     raw_path: @utf8.encode(path),
     query_string: @utf8.encode(query),
-    root_path: "",
+    root_path: config.root_path,
     headers: headers_to_pairs(req.headers),
-    client: None,
+    client,
     server: None,
     subprotocols: parse_subprotocols(req.headers),
     asgi: @moonasgi.AsgiVersion::websocket(),
@@ -47,20 +68,32 @@ async fn serve_websocket_raw(
     } else if closed.val {
       @moonasgi.Event::WebSocketDisconnect(code=1006, reason=None)
     } else {
-      let msg = Some(ws_read_message(reader, writer)) catch { _ => None }
+      let msg : Result[WsMessage, Int] = Ok(
+        ws_read_message(reader, writer, max_size=config.ws.max_size),
+      ) catch {
+        // A violation names the code the connection must be failed with; anything else is the
+        // stream ending under us, which has no status to report.
+        WsError(code, _) => Err(code)
+        _ => Err(1006)
+      }
       match msg {
-        None => {
+        Err(code) => {
           closed.val = true
-          @moonasgi.Event::WebSocketDisconnect(code=1006, reason=None)
+          if code != 1006 {
+            // §7.1.7: fail the connection, but say why on the wire first.
+            writer.write(
+              ws_encode_frame(true, Close, ws_close_payload(code, "")),
+            ) catch {
+              _ => ()
+            }
+          }
+          @moonasgi.Event::WebSocketDisconnect(code~, reason=None)
         }
-        Some(WsText(bytes)) =>
-          @moonasgi.Event::WebSocketReceive(
-            text=Some(@utf8.decode_lossy(bytes[:])),
-            bytes=None,
-          )
-        Some(WsBinary(bytes)) =>
+        Ok(WsText(text)) =>
+          @moonasgi.Event::WebSocketReceive(text=Some(text), bytes=None)
+        Ok(WsBinary(bytes)) =>
           @moonasgi.Event::WebSocketReceive(text=None, bytes=Some(bytes))
-        Some(WsClose(code, _)) => {
+        Ok(WsClose(code, _)) => {
           closed.val = true
           @moonasgi.Event::WebSocketDisconnect(code~, reason=None)
         }

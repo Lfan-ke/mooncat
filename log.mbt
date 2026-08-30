@@ -118,3 +118,24 @@ pub fn Logger::access_line(
     )
   }
 }
+
+///|
+/// The reason phrase an access line pairs with a status. Lives here rather than beside
+/// the native server because the access line is written on every backend.
+fn reason(code : Int) -> String {
+  match code {
+    200 => "OK"
+    201 => "Created"
+    204 => "No Content"
+    301 => "Moved Permanently"
+    302 => "Found"
+    304 => "Not Modified"
+    400 => "Bad Request"
+    401 => "Unauthorized"
+    403 => "Forbidden"
+    404 => "Not Found"
+    405 => "Method Not Allowed"
+    500 => "Internal Server Error"
+    _ => ""
+  }
+}

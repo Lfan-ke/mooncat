@@ -182,9 +182,13 @@ pub fn qpack_static_len() -> Int
 
 pub fn quic_ack_frame_ranges(QuicFrame) -> Array[(Int64, Int64)] raise
 
+pub let quic_amplification_factor : Int64
+
 pub fn quic_application_keys(Bytes, Bytes, Bool) -> QuicPacketKeys
 
 pub fn quic_client_initial_secret(Bytes) -> Bytes
+
+pub fn quic_effective_idle_timeout(Int64, Int64) -> Int64
 
 pub fn quic_encode_payload(Array[QuicFrame]) -> Bytes
 
@@ -208,7 +212,11 @@ pub fn quic_key_update(Bytes) -> Bytes
 
 pub fn quic_loss_time_threshold(RttEstimator, Int64) -> Int64
 
+pub let quic_min_initial_datagram : Int
+
 pub fn quic_next_keys(Bytes) -> (Bytes, QuicPacketKeys)
+
+pub fn quic_now() -> Int64
 
 pub fn quic_packet_keys(Bytes) -> QuicPacketKeys
 
@@ -245,6 +253,10 @@ pub fn quic_send_handshake(UInt, Bytes, Bytes, Int64, Int, Array[QuicFrame], Qui
 pub fn quic_send_initial(UInt, Bytes, Bytes, Bytes, Int64, Int, Array[QuicFrame], QuicPacketKeys) -> Bytes
 
 pub fn quic_send_short(Bool, Bool, Bytes, Int64, Int, Array[QuicFrame], QuicPacketKeys) -> Bytes
+
+pub async fn quic_serve(String, QuicServer[@socket.Addr], tick_ms? : Int) -> Unit
+
+pub async fn quic_serve_endpoint(QuicUdpEndpoint, QuicServer[@socket.Addr], tick_ms? : Int) -> Unit
 
 pub fn quic_server_initial_secret(Bytes) -> Bytes
 
@@ -365,6 +377,8 @@ pub fn tls13_server_hs_secret_from_client_hello(Bytes, Bytes, Bytes) -> Bytes?
 pub fn tls13_server_hs_traffic_secret(Bytes, Bytes) -> Bytes
 
 pub fn tls13_signature_schemes() -> Array[Int]
+
+pub fn tls13_traffic_keys(Bytes) -> TlsTrafficKeys
 
 pub fn tls13_transcript_hash(Bytes) -> Bytes
 
@@ -521,6 +535,34 @@ pub let tls_legacy_version : Int
 pub fn tls_parse_handshake(BytesView) -> (Int, Bytes)?
 
 pub fn tls_quic_transport_params_extension(Array[TransportParam]) -> TlsExtension
+
+pub let tls_record_alert : Int
+
+pub let tls_record_application_data : Int
+
+pub let tls_record_ccs : Bytes
+
+pub let tls_record_change_cipher_spec : Int
+
+pub fn tls_record_encode(Int, Bytes) -> Bytes raise TlsAlert
+
+pub let tls_record_handshake : Int
+
+pub let tls_record_header_len : Int
+
+pub fn tls_record_inner(Int, Bytes, Int) -> Bytes
+
+pub let tls_record_max_encrypted : Int
+
+pub let tls_record_max_fragment : Int
+
+pub fn tls_record_nonce(Bytes, UInt64) -> Bytes
+
+pub fn tls_record_parse(BytesView) -> (TlsRecord, Int)? raise TlsAlert
+
+pub fn tls_record_parse_encrypted(BytesView) -> (TlsRecord, Int)? raise TlsAlert
+
+pub fn tls_record_unpad(BytesView) -> (Int, Bytes) raise TlsAlert
 
 pub fn tls_selected_alpn(Array[TlsExtension]) -> String?
 
@@ -896,6 +938,7 @@ pub struct PacketNumberSpace {
   mut ack_eliciting_pending : Bool
 }
 pub fn PacketNumberSpace::ack_pending(Self) -> Bool
+pub fn PacketNumberSpace::advance_past(Self, Int64) -> Unit
 pub fn PacketNumberSpace::build_ack(Self, UInt64) -> QuicFrame?
 pub fn PacketNumberSpace::largest_acked(Self) -> Int64?
 pub fn PacketNumberSpace::new() -> Self
@@ -930,6 +973,12 @@ pub(all) enum QpackEncoderInst {
   Duplicate(index~ : Int)
 } derive(Eq, @debug.Debug)
 
+pub(all) enum QuicConnPhase {
+  Active
+  Closing
+  Draining
+} derive(Eq, @debug.Debug)
+
 pub struct QuicConnection {
   is_server : Bool
   initial_space : PacketNumberSpace
@@ -955,6 +1004,7 @@ pub(all) enum QuicFrame {
   Crypto(offset~ : UInt64, data~ : Bytes)
   Stream(id~ : UInt64, offset~ : UInt64, fin~ : Bool, data~ : Bytes)
   Ack(largest~ : UInt64, delay~ : UInt64, first_range~ : UInt64, ranges~ : Array[(UInt64, UInt64)])
+  AckEcn(largest~ : UInt64, delay~ : UInt64, first_range~ : UInt64, ranges~ : Array[(UInt64, UInt64)], ect0~ : UInt64, ect1~ : UInt64, ce~ : UInt64)
   ResetStream(id~ : UInt64, error_code~ : UInt64, final_size~ : UInt64)
   StopSending(id~ : UInt64, error_code~ : UInt64)
   NewToken(token~ : Bytes)
@@ -1042,6 +1092,7 @@ pub struct QuicSender {
   retransmit : Array[StreamSend]
   mut next_pn : Int64
 }
+pub fn QuicSender::advance_past(Self, Int64) -> Unit
 pub fn QuicSender::new(UInt64, UInt64, Int64, Int64, Int64, UInt64) -> Self
 pub fn QuicSender::on_ack(Self, QuicFrame, Int64) -> Unit raise
 pub fn QuicSender::on_max_data(Self, UInt64) -> Unit
@@ -1051,6 +1102,78 @@ pub fn QuicSender::poll_send(Self, Int64) -> (Int64, Array[QuicFrame])? raise
 pub fn QuicSender::queue_fin(Self, UInt64) -> Unit
 pub fn QuicSender::queue_stream(Self, UInt64, Bytes) -> Unit
 pub fn QuicSender::window(Self) -> Int64
+
+pub(all) struct QuicServeConfig {
+  version : UInt
+  idle_timeout : Int64
+  close_period : Int64
+  max_datagram : Int64
+  max_ack_delay : Int64
+  granularity : Int64
+  initial_max_data : UInt64
+  initial_max_stream_data : UInt64
+  max_frame : UInt64
+}
+pub fn QuicServeConfig::default() -> Self
+
+pub struct QuicServeConn[A] {
+  peer : A
+  cid : Bytes
+  peer_cid : Bytes
+  core : QuicServerConn
+  sender : QuicSender
+  cfg : QuicServeConfig
+  out : Array[Bytes]
+  received : Array[(QuicLevel, QuicFrame)]
+  mut rx : Int64
+  mut tx : Int64
+  mut packets : Int
+  mut validated : Bool
+  mut last_rx : Int64
+  mut idle_timeout : Int64
+  mut phase : QuicConnPhase
+  mut close_at : Int64
+  mut close_frame : QuicFrame?
+  mut close_level : QuicLevel
+  mut hs_rx : QuicPacketKeys?
+  mut hs_rx_secret : Bytes
+  mut hs_tx : QuicPacketKeys?
+  mut app_rx : QuicPacketKeys?
+  mut app_tx : QuicPacketKeys?
+}
+pub fn[A] QuicServeConn::apply_peer_params(Self[A], Array[TransportParam]) -> Unit
+pub fn[A] QuicServeConn::can_send(Self[A], Int) -> Bool
+pub fn[A] QuicServeConn::cid(Self[A]) -> Bytes
+pub fn[A] QuicServeConn::close(Self[A], UInt64, Bytes, Int64) -> Unit
+pub fn[A] QuicServeConn::core(Self[A]) -> QuicServerConn
+pub fn[A] QuicServeConn::idle_timeout(Self[A]) -> Int64
+pub fn[A] QuicServeConn::install_app_keys(Self[A], Bytes, Bytes) -> Unit
+pub fn[A] QuicServeConn::install_handshake_keys(Self[A], Bytes, Bytes) -> Unit
+pub fn[A] QuicServeConn::largest_acked(Self[A], QuicLevel) -> Int64?
+pub fn[A] QuicServeConn::packets_received(Self[A]) -> Int
+pub fn[A] QuicServeConn::peer(Self[A]) -> A
+pub fn[A] QuicServeConn::pending(Self[A]) -> Int
+pub fn[A] QuicServeConn::phase(Self[A]) -> QuicConnPhase
+pub fn[A] QuicServeConn::queue_stream(Self[A], UInt64, Bytes) -> Unit
+pub fn[A] QuicServeConn::rx_bytes(Self[A]) -> Int64
+pub fn[A] QuicServeConn::send(Self[A], QuicLevel, Array[QuicFrame]) -> Unit
+pub fn[A] QuicServeConn::send_level(Self[A]) -> QuicLevel
+pub fn[A] QuicServeConn::take_received(Self[A]) -> Array[(QuicLevel, QuicFrame)]
+pub fn[A] QuicServeConn::tx_bytes(Self[A]) -> Int64
+pub fn[A] QuicServeConn::validated(Self[A]) -> Bool
+
+pub struct QuicServer[A] {
+  conns : Map[Bytes, QuicServeConn[A]]
+  cfg : QuicServeConfig
+}
+pub fn[A] QuicServer::close(Self[A], Bytes, UInt64, Bytes, Int64) -> Unit
+pub fn[A] QuicServer::conn(Self[A], Bytes) -> QuicServeConn[A]?
+pub fn[A] QuicServer::conn_ids(Self[A]) -> Array[Bytes]
+pub fn[A] QuicServer::count(Self[A]) -> Int
+pub fn[A] QuicServer::new(QuicServeConfig) -> Self[A]
+pub fn[A] QuicServer::poll_out(Self[A], Int64) -> (Bytes, A)? raise
+pub fn[A] QuicServer::recv(Self[A], Bytes, A, Int64) -> Unit raise
+pub fn[A] QuicServer::tick(Self[A], Int64) -> Unit
 
 pub struct QuicServerConn {
   initial_keys : QuicPacketKeys
@@ -1062,6 +1185,8 @@ pub fn QuicServerConn::handshake_state(Self) -> TlsServerState
 pub fn QuicServerConn::initial_ack_pending(Self) -> Bool
 pub fn QuicServerConn::negotiate(Self) -> TlsNegotiation raise TlsAlert
 pub fn QuicServerConn::new(Bytes) -> Self
+pub fn QuicServerConn::on_frames(Self, QuicLevel, Array[QuicFrame], Int64) -> Array[Int] raise
+pub fn QuicServerConn::on_handshake_frames(Self, Array[QuicFrame], Int64, Bytes) -> Bool raise
 pub fn QuicServerConn::receive_handshake(Self, Bytes, QuicPacketKeys, Bytes) -> Bool raise
 pub fn QuicServerConn::receive_initial(Self, Bytes) -> Array[Int] raise
 pub fn QuicServerConn::send_handshake_flight(Self, Bytes, Bytes, Bytes, Bytes, Bytes, Bytes, Int64) -> Bytes raise
@@ -1291,6 +1416,49 @@ pub(all) enum TlsNegotiation {
   Retry(Int)
 } derive(Eq, @debug.Debug)
 
+pub(all) struct TlsRecord {
+  content_type : Int
+  fragment : Bytes
+} derive(Eq, @debug.Debug)
+
+pub(all) enum TlsRecordEvent {
+  HandshakeMsg(msg_type~ : Int, message~ : Bytes)
+  AppData(Bytes)
+  PeerAlert(TlsAlert)
+} derive(Eq, @debug.Debug)
+
+pub struct TlsRecordKeys {
+  mut keys : TlsTrafficKeys
+  mut seq : UInt64
+}
+pub fn TlsRecordKeys::keys(Self) -> TlsTrafficKeys
+pub fn TlsRecordKeys::new(Bytes) -> Self
+pub fn TlsRecordKeys::nonce(Self) -> Bytes
+pub fn TlsRecordKeys::open(Self, BytesView) -> (Int, Bytes) raise TlsAlert
+pub fn TlsRecordKeys::rekey(Self, Bytes) -> Unit
+pub fn TlsRecordKeys::seal(Self, Int, Bytes) -> Bytes raise TlsAlert
+pub fn TlsRecordKeys::seal_padded(Self, Int, Bytes, Int) -> Bytes raise TlsAlert
+pub fn TlsRecordKeys::seq(Self) -> UInt64
+
+pub struct TlsRecordLayer {
+  mut inbox : Bytes
+  mut partial : Bytes
+  mut read : TlsRecordKeys?
+  mut write : TlsRecordKeys?
+  mut compat : Bool
+}
+pub fn TlsRecordLayer::feed(Self, Bytes) -> Array[TlsRecordEvent] raise TlsAlert
+pub fn TlsRecordLayer::handshake_done(Self) -> Unit
+pub fn TlsRecordLayer::has_partial(Self) -> Bool
+pub fn TlsRecordLayer::new() -> Self
+pub fn TlsRecordLayer::read_seq(Self) -> UInt64
+pub fn TlsRecordLayer::set_read_secret(Self, Bytes) -> Unit
+pub fn TlsRecordLayer::set_write_secret(Self, Bytes) -> Unit
+pub fn TlsRecordLayer::write_alert(Self, TlsAlert) -> Bytes raise TlsAlert
+pub fn TlsRecordLayer::write_app(Self, Bytes) -> Bytes raise TlsAlert
+pub fn TlsRecordLayer::write_handshake(Self, Bytes) -> Bytes raise TlsAlert
+pub fn TlsRecordLayer::write_seq(Self) -> UInt64
+
 pub struct TlsServerHandshake {
   mut state : TlsServerState
   transcript : TranscriptHash
@@ -1323,6 +1491,11 @@ pub(all) enum TlsServerState {
   Connected
 } derive(Eq, @debug.Debug)
 pub fn TlsServerState::new() -> Self
+
+pub(all) struct TlsTrafficKeys {
+  key : Bytes
+  iv : Bytes
+} derive(Eq, @debug.Debug)
 
 pub struct Tlv {
   tag : Int

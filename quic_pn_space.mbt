@@ -34,6 +34,19 @@ pub fn PacketNumberSpace::next_packet_number(self : PacketNumberSpace) -> Int64 
 }
 
 ///|
+/// Skip the send counter past `pn`, so a packet another sender numbered in this space — the
+/// recovery loop's, which keeps its own counter — is not handed out again here. A `pn` this
+/// space is already past leaves it alone.
+pub fn PacketNumberSpace::advance_past(
+  self : PacketNumberSpace,
+  pn : Int64,
+) -> Unit {
+  if pn >= self.next_pn {
+    self.next_pn = pn + 1L
+  }
+}
+
+///|
 /// The largest packet number the peer has acknowledged, or `None`.
 pub fn PacketNumberSpace::largest_acked(self : PacketNumberSpace) -> Int64? {
   self.largest_acked

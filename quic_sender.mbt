@@ -44,6 +44,16 @@ pub fn QuicSender::new(
 }
 
 ///|
+/// Skip the send counter past `pn`, so a packet this sender did not build — a driver's
+/// ACK-only packet in the same space — does not collide with a number it later assigns. A
+/// `pn` the sender is already past leaves it alone.
+pub fn QuicSender::advance_past(self : QuicSender, pn : Int64) -> Unit {
+  if pn >= self.next_pn {
+    self.next_pn = pn + 1L
+  }
+}
+
+///|
 /// Queue `bytes` of application data to send on stream `id`.
 pub fn QuicSender::queue_stream(
   self : QuicSender,

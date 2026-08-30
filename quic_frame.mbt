@@ -1,7 +1,7 @@
 // QUIC frames (RFC 9000 §19) — the content carried inside a packet's payload. Each
 // frame starts with a varint type; its fields are varints too, except the fixed-width
 // connection-ID tokens and path-validation data. This covers the full §19 frame set:
-// PADDING/PING/ACK, CRYPTO and STREAM, the flow-control family (MAX_*, *_BLOCKED),
+// PADDING/PING/ACK/ACK_ECN, CRYPTO and STREAM, the flow-control family (MAX_*, *_BLOCKED),
 // the stream-control frames (RESET_STREAM/STOP_SENDING), connection management
 // (NEW_CONNECTION_ID/RETIRE_CONNECTION_ID/NEW_TOKEN), path validation
 // (PATH_CHALLENGE/PATH_RESPONSE), and the lifecycle frames
@@ -21,6 +21,17 @@ pub(all) enum QuicFrame {
     delay~ : UInt64,
     first_range~ : UInt64,
     ranges~ : Array[(UInt64, UInt64)]
+  )
+  // ACK_ECN (0x03) repeats the ACK body, then the ECT(0), ECT(1) and CE counts the peer
+  // has seen on this path (RFC 9000 §19.3.2).
+  AckEcn(
+    largest~ : UInt64,
+    delay~ : UInt64,
+    first_range~ : UInt64,
+    ranges~ : Array[(UInt64, UInt64)],
+    ect0~ : UInt64,
+    ect1~ : UInt64,
+    ce~ : UInt64
   )
   ResetStream(id~ : UInt64, error_code~ : UInt64, final_size~ : UInt64)
   StopSending(id~ : UInt64, error_code~ : UInt64)
@@ -46,6 +57,28 @@ pub(all) enum QuicFrame {
   // application-error close (0x1d), which omits the triggering frame type.
   ConnectionClose(error_code~ : UInt64, frame_type~ : UInt64?, reason~ : Bytes)
 } derive(Eq, Debug)
+
+///|
+/// Write an ACK frame's body — Largest Acknowledged, ACK Delay, the range count, First ACK
+/// Range, then the `(Gap, ACK Range Length)` pairs. ACK and ACK_ECN share it; ACK_ECN adds
+/// its counts after.
+fn write_ack_body(
+  buf : Buffer,
+  largest : UInt64,
+  delay : UInt64,
+  first_range : UInt64,
+  ranges : Array[(UInt64, UInt64)],
+) -> Unit {
+  buf.write_bytes(quic_varint_encode(largest)[:])
+  buf.write_bytes(quic_varint_encode(delay)[:])
+  buf.write_bytes(quic_varint_encode(ranges.length().to_uint64())[:])
+  buf.write_bytes(quic_varint_encode(first_range)[:])
+  for r in ranges {
+    let (gap, len) = r
+    buf.write_bytes(quic_varint_encode(gap)[:])
+    buf.write_bytes(quic_varint_encode(len)[:])
+  }
+}
 
 ///|
 /// Encode a frame to its wire bytes.
@@ -75,15 +108,14 @@ pub fn encode_frame(f : QuicFrame) -> Bytes {
     }
     Ack(largest~, delay~, first_range~, ranges~) => {
       buf.write_bytes(quic_varint_encode(2UL)[:])
-      buf.write_bytes(quic_varint_encode(largest)[:])
-      buf.write_bytes(quic_varint_encode(delay)[:])
-      buf.write_bytes(quic_varint_encode(ranges.length().to_uint64())[:])
-      buf.write_bytes(quic_varint_encode(first_range)[:])
-      for r in ranges {
-        let (gap, len) = r
-        buf.write_bytes(quic_varint_encode(gap)[:])
-        buf.write_bytes(quic_varint_encode(len)[:])
-      }
+      write_ack_body(buf, largest, delay, first_range, ranges)
+    }
+    AckEcn(largest~, delay~, first_range~, ranges~, ect0~, ect1~, ce~) => {
+      buf.write_bytes(quic_varint_encode(3UL)[:])
+      write_ack_body(buf, largest, delay, first_range, ranges)
+      buf.write_bytes(quic_varint_encode(ect0)[:])
+      buf.write_bytes(quic_varint_encode(ect1)[:])
+      buf.write_bytes(quic_varint_encode(ce)[:])
     }
     ResetStream(id~, error_code~, final_size~) => {
       buf.write_bytes(quic_varint_encode(4UL)[:])
@@ -168,6 +200,36 @@ pub fn encode_frame(f : QuicFrame) -> Bytes {
 }
 
 ///|
+/// Parse an ACK frame's body starting at `start` in `b` — Largest Acknowledged, ACK Delay,
+/// the range count, First ACK Range, then that many `(Gap, ACK Range Length)` pairs — with
+/// the offset just past it. ACK (0x02) ends there; ACK_ECN (0x03) reads its three counts on.
+fn parse_ack_body(
+  b : BytesView,
+  start : Int,
+) -> (UInt64, UInt64, UInt64, Array[(UInt64, UInt64)], Int)? {
+  let mut off = start
+  guard quic_varint_decode(b[off:]) is Some((largest, l1)) else { return None }
+  off = off + l1
+  guard quic_varint_decode(b[off:]) is Some((delay, l2)) else { return None }
+  off = off + l2
+  guard quic_varint_decode(b[off:]) is Some((count, l3)) else { return None }
+  off = off + l3
+  guard quic_varint_decode(b[off:]) is Some((first_range, l4)) else {
+    return None
+  }
+  off = off + l4
+  let ranges : Array[(UInt64, UInt64)] = []
+  for _i = 0; _i < count.to_int(); _i = _i + 1 {
+    guard quic_varint_decode(b[off:]) is Some((gap, lg)) else { return None }
+    off = off + lg
+    guard quic_varint_decode(b[off:]) is Some((rlen, lr)) else { return None }
+    off = off + lr
+    ranges.push((gap, rlen))
+  }
+  Some((largest, delay, first_range, ranges, off))
+}
+
+///|
 /// Parse one frame at the start of `b`, returning it and the bytes it occupied, or
 /// `None` on a truncated frame or a type this brick does not yet decode. A PADDING
 /// frame absorbs the whole run of leading zero bytes.
@@ -183,36 +245,30 @@ pub fn parse_frame(b : BytesView) -> (QuicFrame, Int)? {
     }
     1UL => Some((Ping, tlen))
     2UL => {
-      let mut off = tlen
-      guard quic_varint_decode(b[off:]) is Some((largest, l1)) else {
+      guard parse_ack_body(b, tlen)
+        is Some((largest, delay, first_range, ranges, off)) else {
         return None
-      }
-      off = off + l1
-      guard quic_varint_decode(b[off:]) is Some((delay, l2)) else {
-        return None
-      }
-      off = off + l2
-      guard quic_varint_decode(b[off:]) is Some((count, l3)) else {
-        return None
-      }
-      off = off + l3
-      guard quic_varint_decode(b[off:]) is Some((first_range, l4)) else {
-        return None
-      }
-      off = off + l4
-      let ranges : Array[(UInt64, UInt64)] = []
-      for _i = 0; _i < count.to_int(); _i = _i + 1 {
-        guard quic_varint_decode(b[off:]) is Some((gap, lg)) else {
-          return None
-        }
-        off = off + lg
-        guard quic_varint_decode(b[off:]) is Some((rlen, lr)) else {
-          return None
-        }
-        off = off + lr
-        ranges.push((gap, rlen))
       }
       Some((Ack(largest~, delay~, first_range~, ranges~), off))
+    }
+    3UL => {
+      guard parse_ack_body(b, tlen)
+        is Some((largest, delay, first_range, ranges, body_end)) else {
+        return None
+      }
+      let mut off = body_end
+      guard quic_varint_decode(b[off:]) is Some((ect0, l1)) else { return None }
+      off = off + l1
+      guard quic_varint_decode(b[off:]) is Some((ect1, l2)) else { return None }
+      off = off + l2
+      guard quic_varint_decode(b[off:]) is Some((ce, l3)) else { return None }
+      off = off + l3
+      Some(
+        (
+          AckEcn(largest~, delay~, first_range~, ranges~, ect0~, ect1~, ce~),
+          off,
+        ),
+      )
     }
     6UL => {
       let mut off = tlen

@@ -77,11 +77,13 @@ pub fn SentPacketTracker::on_ack(
 
 ///|
 /// The acknowledged packet-number ranges an ACK frame conveys, as ascending inclusive
-/// `(low, high)` pairs (RFC 9000 §19.3), or an empty list for a non-ACK frame. Raises if the
+/// `(low, high)` pairs (RFC 9000 §19.3), or an empty list for a frame that is neither ACK nor
+/// ACK_ECN — the ECN counts do not change which packets are acknowledged. Raises if the
 /// frame's ranges underflow the packet-number space.
 pub fn quic_ack_frame_ranges(frame : QuicFrame) -> Array[(Int64, Int64)] raise {
   match frame {
-    Ack(largest~, first_range~, ranges~, ..) =>
+    Ack(largest~, first_range~, ranges~, ..)
+    | AckEcn(largest~, first_range~, ranges~, ..) =>
       ack_fields_to_ranges(largest, first_range, ranges).map(r => {
         (r.0.reinterpret_as_int64(), r.1.reinterpret_as_int64())
       })

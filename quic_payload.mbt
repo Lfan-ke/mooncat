@@ -46,10 +46,10 @@ pub fn quic_parse_payload(
 
 ///|
 /// Whether a single frame is ack-eliciting (RFC 9000 §13.2.1): every frame except
-/// PADDING, ACK, and CONNECTION_CLOSE obliges the peer to acknowledge the packet.
+/// PADDING, ACK, ACK_ECN, and CONNECTION_CLOSE obliges the peer to acknowledge the packet.
 pub fn quic_frame_is_ack_eliciting(frame : QuicFrame) -> Bool {
   match frame {
-    Padding(_) | Ack(..) | ConnectionClose(..) => false
+    Padding(_) | Ack(..) | AckEcn(..) | ConnectionClose(..) => false
     _ => true
   }
 }

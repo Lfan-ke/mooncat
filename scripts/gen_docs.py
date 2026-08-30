@@ -18,17 +18,19 @@ SECTIONS = [
     ("http2", ("http2.native.mbt",), "HTTP/2 (h2c)",
      "Serving HTTP/2 over cleartext: the connection preface, frame pump and stream "
      "multiplexing, over the same dispatch path HTTP/1.1 uses."),
-    ("tls", ('tls13.mbt', 'tls13_alert.mbt', 'tls13_alpn.mbt', 'tls13_certificate.mbt', 'tls13_certificate_verify.mbt', 'tls13_client_state.mbt', 'tls13_ecdhe.mbt', 'tls13_encrypted_extensions.mbt', 'tls13_handshake_driver.mbt', 'tls13_hello_extensions.mbt', 'tls13_hello_retry.mbt', 'tls13_key_share.mbt', 'tls13_quic_params.mbt', 'tls13_server_state.mbt', 'tls13_transcript.mbt', 'tls_handshake.mbt', 'tls.native.mbt', 'x509.mbt', 'asn1.mbt'), "TLS 1.3",
+    ("tls", ('tls13.mbt', 'tls13_alert.mbt', 'tls13_alpn.mbt', 'tls13_certificate.mbt', 'tls13_certificate_verify.mbt', 'tls13_client_state.mbt', 'tls13_ecdhe.mbt', 'tls13_encrypted_extensions.mbt', 'tls13_handshake_driver.mbt', 'tls13_hello_extensions.mbt', 'tls13_hello_retry.mbt', 'tls13_key_share.mbt', 'tls13_quic_params.mbt', 'tls13_record.mbt', 'tls13_record_layer.mbt', 'tls13_server_state.mbt', 'tls13_transcript.mbt', 'tls_handshake.mbt', 'tls.native.mbt', 'x509.mbt', 'asn1.mbt'), "TLS 1.3",
      "A TLS 1.3 stack written here rather than bound: the client and server state "
      "machines, key schedule and transcript, ECDHE key share, ALPN, certificate and "
      "CertificateVerify, the QUIC transport-parameters extension, the mandatory hello "
      "extensions and the negotiation they drive, HelloRetryRequest, the alert protocol, "
-     "plus the X.509 and DER parsing they rest on."),
-    ("quic", ('quic_ack.mbt', 'quic_app_packet.mbt', 'quic_congestion.mbt', 'quic_conn.mbt', 'quic_flow.mbt', 'quic_frame.mbt', 'quic_handshake_packet.mbt', 'quic_hp.mbt', 'quic_hs_keys.mbt', 'quic_initial.mbt', 'quic_initial_conn.mbt', 'quic_initial_packet.mbt', 'quic_keys.mbt', 'quic_loss.mbt', 'quic_packet_header.mbt', 'quic_packet_number.mbt', 'quic_payload.mbt', 'quic_pn_space.mbt', 'quic_reassembly.mbt', 'quic_recovery.mbt', 'quic_retry.mbt', 'quic_rtt.mbt', 'quic_send_flow.mbt', 'quic_sender.mbt', 'quic_server_conn.mbt', 'quic_short_header.mbt', 'quic_stream_id.mbt', 'quic_stream_mgr.mbt', 'quic_stream_sched.mbt', 'quic_stream_state.mbt', 'quic_transport_params.mbt', 'quic_udp.native.mbt', 'quic_varint.mbt'), "QUIC",
+     "the record layer that carries all of it over TCP, plus the X.509 and DER parsing "
+     "they rest on."),
+    ("quic", ('quic_ack.mbt', 'quic_app_packet.mbt', 'quic_congestion.mbt', 'quic_conn.mbt', 'quic_flow.mbt', 'quic_frame.mbt', 'quic_handshake_packet.mbt', 'quic_hp.mbt', 'quic_hs_keys.mbt', 'quic_initial.mbt', 'quic_initial_conn.mbt', 'quic_initial_packet.mbt', 'quic_keys.mbt', 'quic_loss.mbt', 'quic_packet_header.mbt', 'quic_packet_number.mbt', 'quic_payload.mbt', 'quic_pn_space.mbt', 'quic_reassembly.mbt', 'quic_recovery.mbt', 'quic_retry.mbt', 'quic_rtt.mbt', 'quic_send_flow.mbt', 'quic_sender.mbt', 'quic_serve.mbt', 'quic_serve.native.mbt', 'quic_server_conn.mbt', 'quic_short_header.mbt', 'quic_stream_id.mbt', 'quic_stream_mgr.mbt', 'quic_stream_sched.mbt', 'quic_stream_state.mbt', 'quic_transport_params.mbt', 'quic_udp.native.mbt', 'quic_varint.mbt'), "QUIC",
      "RFC 9000/9001 from the packet up: header protection, packet-number spaces, "
      "initial and handshake keys, frames, streams and their scheduler, flow control, "
-     "loss recovery, congestion control, RTT estimation, retry, and the connection "
-     "state machines on both ends."),
+     "loss recovery, congestion control, RTT estimation, retry, the connection "
+     "state machines on both ends, and the server event loop that demultiplexes "
+     "datagrams onto them over a UDP socket."),
     ("http3", ('http3_conn.mbt', 'http3_frame.mbt', 'http3_frame_validation.mbt', 'http3_message.mbt', 'http3_server.mbt', 'http3_settings.mbt', 'http3_stream.mbt', 'qpack_dynamic_table.mbt', 'qpack_encode_dynamic.mbt', 'qpack_field.mbt', 'qpack_field_dynamic.mbt', 'qpack_instructions.mbt', 'qpack_int.mbt', 'qpack_section_prefix.mbt', 'qpack_static.mbt'), "HTTP/3 and QPACK",
      "RFC 9114 framing, settings and the request/response message model over QUIC "
      "streams, with the RFC 9204 QPACK codec: static and dynamic tables, field "

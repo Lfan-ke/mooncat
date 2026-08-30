@@ -259,6 +259,54 @@ test "connection-management and path frames round-trip (RFC 9000 §19.7/§19.15-
 }
 
 ///|
+test "ACK_ECN encodes and parses per RFC 9000 §19.3.2" {
+  // Type 03, the ACK body, then the ECT(0), ECT(1) and CE counts.
+  let f : QuicFrame = AckEcn(
+    largest=233UL,
+    delay=23UL,
+    first_range=2UL,
+    ranges=[(1UL, 3UL)],
+    ect0=66UL,
+    ect1=6UL,
+    ce=1UL,
+  )
+  assert_eq(qv_hex(encode_frame(f)), "0340e9170102010340420601")
+  match parse_frame(encode_frame(f)[:]) {
+    Some((g, n)) => {
+      assert_eq(g, f)
+      assert_eq(n, encode_frame(f).length())
+    }
+    None => fail("expected an ACK_ECN frame")
+  }
+}
+
+///|
+test "ACK_ECN acknowledges the same packets an ACK does, and elicits no ACK itself" {
+  let plain : QuicFrame = Ack(largest=233UL, delay=23UL, first_range=2UL, ranges=[
+    (1UL, 3UL),
+  ])
+  let ecn : QuicFrame = AckEcn(
+    largest=233UL,
+    delay=23UL,
+    first_range=2UL,
+    ranges=[(1UL, 3UL)],
+    ect0=66UL,
+    ect1=6UL,
+    ce=1UL,
+  )
+  // The ECN counts are congestion feedback, not acknowledgement: the ranges must agree, or
+  // loss recovery would read an ECN-enabled peer's ACKs differently from a plain peer's.
+  assert_eq(quic_ack_frame_ranges(ecn), quic_ack_frame_ranges(plain))
+  assert_eq(quic_frame_is_ack_eliciting(ecn), false)
+}
+
+///|
+test "a truncated ACK_ECN parses to None" {
+  // The ACK body is complete but only two of the three ECN counts follow.
+  assert_eq(parse_frame(qv_hexb("0340e91701020103404206")[:]) is None, true)
+}
+
+///|
 test "a truncated PATH_CHALLENGE parses to None" {
   // Declares the frame but supplies only 4 of the 8 data bytes.
   assert_eq(parse_frame(qv_hexb("1a00112233")[:]) is None, true)

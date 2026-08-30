@@ -184,6 +184,37 @@ pub fn QuicServerConn::send_handshake_flight_signed(
 }
 
 ///|
+/// Drive an already-unprotected packet's `frames` at `level`, numbered `pn`: record the
+/// packet for acknowledgement and feed its CRYPTO frames into that level's reassembler,
+/// driving the handshake with whatever handshake bytes become contiguous. Returns the
+/// handshake message types processed. A driver that unprotected the packet itself — because
+/// it also wants the ACK and CONNECTION_CLOSE frames beside the CRYPTO — enters here rather
+/// than through `receive_initial`.
+pub fn QuicServerConn::on_frames(
+  self : QuicServerConn,
+  level : QuicLevel,
+  frames : Array[QuicFrame],
+  pn : Int64,
+) -> Array[Int] raise {
+  self.conn.on_packet_received(level, pn, quic_payload_is_ack_eliciting(frames))
+  let processed : Array[Int] = []
+  for frame in frames {
+    match frame {
+      Crypto(offset~, data~) => {
+        let contiguous = self.conn.on_crypto_frame(level, offset, data)
+        if contiguous.length() > 0 {
+          for msg_type in self.handshake.feed(contiguous) {
+            processed.push(msg_type)
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  processed
+}
+
+///|
 /// Receive a client Initial packet: unprotect it, record its number for acknowledgement,
 /// reassemble its CRYPTO frames, and drive the handshake with the contiguous handshake
 /// bytes. Returns the handshake message types processed. Raises if the packet fails to
@@ -196,30 +227,7 @@ pub fn QuicServerConn::receive_initial(
     Some(v) => v
     None => raise QuicPayloadError("Initial packet failed to authenticate")
   }
-  self.conn.on_packet_received(
-    QuicLevel::Initial,
-    pn,
-    quic_payload_is_ack_eliciting(frames),
-  )
-  let processed : Array[Int] = []
-  for frame in frames {
-    match frame {
-      Crypto(offset~, data~) => {
-        let contiguous = self.conn.on_crypto_frame(
-          QuicLevel::Initial,
-          offset,
-          data,
-        )
-        if contiguous.length() > 0 {
-          for msg_type in self.handshake.feed(contiguous) {
-            processed.push(msg_type)
-          }
-        }
-      }
-      _ => ()
-    }
-  }
-  processed
+  self.on_frames(QuicLevel::Initial, frames, pn)
 }
 
 ///|
@@ -239,6 +247,21 @@ pub fn QuicServerConn::receive_handshake(
     Some(v) => v
     None => raise QuicPayloadError("Handshake packet failed to authenticate")
   }
+  self.on_handshake_frames(frames, pn, client_hs_secret)
+}
+
+///|
+/// Drive the client's Handshake-space `frames`, numbered `pn`, already unprotected: record
+/// the packet, reassemble its CRYPTO stream, verify any Finished in it against
+/// `client_hs_secret` over the transcript as it stands, then fold the messages in. Returns
+/// whether the handshake is now connected with a Finished that authenticated — the frame-level
+/// half of `receive_handshake`, for a driver holding the decrypted packet.
+pub fn QuicServerConn::on_handshake_frames(
+  self : QuicServerConn,
+  frames : Array[QuicFrame],
+  pn : Int64,
+  client_hs_secret : Bytes,
+) -> Bool raise {
   self.conn.on_packet_received(
     QuicLevel::Handshake,
     pn,

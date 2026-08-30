@@ -46,6 +46,17 @@ pub fn QuicServerConn::client_hello(self : QuicServerConn) -> Bytes {
 }
 
 ///|
+/// Negotiate the ClientHello this connection received (RFC 8446 §4.1.1): the group and key
+/// share to run the ECDHE with, and the signature scheme to sign the CertificateVerify under,
+/// read off what the client offered. Raises the §6 alert for a ClientHello this build cannot
+/// serve, and returns `Retry` when the answer is a HelloRetryRequest.
+pub fn QuicServerConn::negotiate(
+  self : QuicServerConn,
+) -> TlsNegotiation raise TlsAlert {
+  self.handshake.negotiate()
+}
+
+///|
 /// Whether an ACK is owed in the Initial space.
 pub fn QuicServerConn::initial_ack_pending(self : QuicServerConn) -> Bool {
   self.conn.space(QuicLevel::Initial).ack_pending()

@@ -54,6 +54,17 @@ pub fn TlsServerHandshake::client_hello(self : TlsServerHandshake) -> Bytes {
 }
 
 ///|
+/// Negotiate the ClientHello this handshake received (RFC 8446 §4.1.1): the group, the
+/// client's key share, and the signature scheme its CertificateVerify will use, or a `Retry`
+/// when the group has no share yet. Raises the §6 alert for a ClientHello this build cannot
+/// serve — decode_error before one has arrived at all.
+pub fn TlsServerHandshake::negotiate(
+  self : TlsServerHandshake,
+) -> TlsNegotiation raise TlsAlert {
+  tls13_negotiate_client_hello(self.client_hello)
+}
+
+///|
 /// Feed received CRYPTO bytes: process every complete handshake message now available —
 /// add it to the transcript and drive the state machine — buffering any trailing partial
 /// message. Returns the handshake types processed, in order.

@@ -46,11 +46,12 @@ let tls_hs_finished : Int = 20
 
 ///|
 /// The next client state on receiving a handshake message of `msg_type` (RFC 8446 A.1).
-/// A message that does not belong in the current state is an unexpected-message error.
+/// A message that does not belong in the current state raises the unexpected_message alert
+/// (§6.2).
 pub fn tls_client_next(
   state : TlsClientState,
   msg_type : Int,
-) -> TlsClientState raise StreamStateError {
+) -> TlsClientState raise TlsAlert {
   match (state, msg_type) {
     (WaitServerHello, t) if t == tls_hs_server_hello => WaitEncryptedExtensions
     (WaitEncryptedExtensions, t) if t == tls_hs_encrypted_extensions =>
@@ -62,6 +63,6 @@ pub fn tls_client_next(
     (WaitCert, t) if t == tls_hs_certificate => WaitCertVerify
     (WaitCertVerify, t) if t == tls_hs_certificate_verify => WaitFinished
     (WaitFinished, t) if t == tls_hs_finished => Connected
-    _ => raise StreamStateError("unexpected TLS 1.3 handshake message")
+    _ => raise tls_fatal(tls_alert_unexpected_message)
   }
 }

@@ -7,9 +7,8 @@
 // Source: FIPS 186-4 / SEC 2 / RFC 6979.
 
 ///|
-/// NIST P-256 (secp256r1) parameters as big integers: the field prime `p`, the coefficient
-/// `a` (= -3 mod p), the group order `n`, and the generator `G`. `b` is unused (verification
-/// never evaluates the curve equation).
+/// NIST P-256 (secp256r1) parameters as big integers: the field prime `p`, the coefficients
+/// `a` (= -3 mod p) and `b`, the group order `n`, and the generator `G`.
 let p256_p : BigInt = BigInt::from_string(
   "FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF",
   radix=16,
@@ -18,6 +17,12 @@ let p256_p : BigInt = BigInt::from_string(
 ///|
 let p256_a : BigInt = BigInt::from_string(
   "FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFC",
+  radix=16,
+)
+
+///|
+let p256_b : BigInt = BigInt::from_string(
+  "5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B",
   radix=16,
 )
 
@@ -155,6 +160,22 @@ pub fn EcdsaPublicKey::from_hex(
     x: BigInt::from_string(x_hex, radix=16),
     y: BigInt::from_string(y_hex, radix=16),
   }
+}
+
+///|
+/// Whether the key is a point on P-256: `y² ≡ x³ - 3x + b (mod p)`, with both coordinates in the
+/// field. A point off the curve is not a key — the group law applied to it computes in a
+/// different and much weaker group, which is how an invalid-curve attack extracts a private key
+/// from the peer that accepts it.
+pub fn EcdsaPublicKey::on_curve(self : EcdsaPublicKey) -> Bool {
+  if self.x < (0 : BigInt) ||
+    self.x >= p256_p ||
+    self.y < (0 : BigInt) ||
+    self.y >= p256_p {
+    return false
+  }
+  fmod_p(self.y * self.y) ==
+  fmod_p(self.x * self.x * self.x + p256_a * self.x + p256_b)
 }
 
 ///|
